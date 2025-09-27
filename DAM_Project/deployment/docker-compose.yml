@@ -1,0 +1,9 @@
+version: "3"
+services:
+  dam-node:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "5000:5000"
+    command: ["python", "node_client/client.py"]
