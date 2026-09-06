@@ -1,0 +1,16 @@
+version: "3"
+services:
+  dam-node:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      # A Hardhat node run via `npx hardhat node` lives on the HOST machine,
+      # not inside this container - 127.0.0.1 inside a container is the
+      # container's own loopback, never the host's. host.docker.internal
+      # resolves to the host automatically on Docker Desktop (Mac/Windows);
+      # extra_hosts below makes it resolve on Linux too (Docker Engine >= 20.10).
+      - DAM_RPC_URL=http://host.docker.internal:8545
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "node_client/client.py"]

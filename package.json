@@ -1,0 +1,21 @@
+{
+  "name": "dam-project",
+  "version": "0.1.0",
+  "description": "Decentralized AI Marketplace (DAM) - smart contracts, node client and AI backend.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run deployment/deploy_smart_contracts.js --network localhost"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0",
+    "jsdom": "^29.1.1"
+  },
+  "dependencies": {
+    "@chainlink/contracts": "^1.5.0"
+  }
+}

@@ -1,0 +1,16 @@
+node_modules/
+artifacts/
+cache/
+coverage/
+coverage.json
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+.env
+
+# Local, per-machine files
+.claude/settings.local.json
+Untitled-1.txt

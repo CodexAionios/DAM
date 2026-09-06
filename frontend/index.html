@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DAM Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>DAM Dashboard</h1>
+      <div class="wallet-box">
+        <span id="account-display" class="mono">not connected</span>
+        <button id="connect-btn">Connect wallet</button>
+      </div>
+    </header>
+
+    <p id="status" class="status"></p>
+
+    <main>
+      <section id="poe-section">
+        <h2>Proof of Efficiency</h2>
+        <div id="poe-status">Connect a wallet to see your on-chain PoE score.</div>
+        <form id="report-metrics-form" class="inline-form">
+          <label>Node address <input name="node" id="report-node-input" type="text" placeholder="0x..." required /></label>
+          <label>Energy usage <input name="energy" type="number" min="1" value="100" required /></label>
+          <label>Latency <input name="latency" type="number" min="1" value="10" required /></label>
+          <button type="submit">Report node metrics (reporter only)</button>
+        </form>
+      </section>
+
+      <section id="auctions-section">
+        <h2>Auctions</h2>
+        <form id="create-auction-form" class="inline-form">
+          <input name="dataHash" type="number" min="0" placeholder="Data hash" required />
+          <input name="budget" type="number" min="0" placeholder="Budget" required />
+          <input name="timeLimit" type="number" min="0" placeholder="Time limit (max latency)" required />
+          <input name="efficiencyReq" type="number" min="0" placeholder="Min. efficiency" required />
+          <button type="submit">Create auction</button>
+        </form>
+        <div id="auctions-list" class="card-list"></div>
+      </section>
+
+      <section id="helixes-section">
+        <h2>Helixes</h2>
+        <div id="helixes-list" class="card-list"></div>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Talks directly to the contracts deployed by
+        <code>deployment/deploy_smart_contracts.js</code>. Run
+        <code>npx hardhat node</code> and the deploy script first, and point your wallet at
+        <code>http://127.0.0.1:8545</code> (chain id 31337).
+      </p>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
