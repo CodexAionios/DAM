@@ -69,15 +69,19 @@ bidders for each task (instead of picking a single winner) and hands the cluster
 `MLTaskManager.sol`, which tracks per-member completion and finalizes whether the helix
 collectively hit its PoE goal — the on-chain counterpart of `ai_backend/helix_manager.py`.
 `PoEEnergyMarket.sol` tracks each node's efficiency score from telemetry a trusted
-reporter submits per-node. `PoEConsensus.sol` gates tensor-mining block commitment on
-that score and a difficulty check, and delegates payouts to `PoEGreenNode.sol`, which
-scales each reward by the validator's efficiency score.
+reporter submits per-node. `PoEConsensus.sol` gates tensor-mining block commitment on that
+score, a recomputed difficulty check and a proof of work — mining is two-phase, so the
+seed is drawn from blocks that did not exist when the miner claimed it, and the work
+target retargets itself. It delegates payouts to `PoEGreenNode.sol`, which scales each
+reward by the validator's efficiency score.
 
 ### Node client
 `chain.py` is the shared web3.py connection layer; `monitor.py` reports a node's energy/
 latency telemetry on-chain; `client.py` discovers auctions, submits bids and reports on
-this node's helix memberships; `mine_and_commit.py` runs the tensor miner and commits a
-valid result via `PoEConsensus`.
+this node's helix memberships; `mine_and_commit.py` opens a mining session, waits for its
+seed to mature, runs the tensor miner and commits a valid result via `PoEConsensus`;
+`fraud_reporter.py` scores node telemetry with the AI backend's fraud detector and
+reconciles the resulting attestations on `FraudDetection` (dry run unless `--submit`).
 
 ### AI backend
 Backend services that perform task matching, fraud detection, efficiency modelling and

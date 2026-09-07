@@ -27,7 +27,10 @@ met its efficiency goal. `PoEEnergyMarket` holds each node's efficiency score,
 computed as `1e18 / (energy × latency)`. `PoEConsensus` turns a tensor-mining
 result into a committed block: it recomputes the tensor's difficulty metrics on
 chain and requires a proof-of-work nonce bound to a seed the miner does not
-choose, so a result can be neither fabricated nor replayed. `PoEGreenNode` pays
+choose, so a result can be neither fabricated nor replayed. Mining is two-phase
+for that reason — a miner claims a session first, and the seed is then drawn
+from blocks that did not exist yet, leaving nothing to select. The work target
+retargets itself on a Bitcoin-style schedule. `PoEGreenNode` pays
 a reward scaled by that same efficiency score. `FraudDetection` blacklists
 nodes, and is consulted at bidding, helix selection and block commitment.
 
@@ -46,10 +49,13 @@ This is a working reference implementation, not a production system. Every
 limitation is documented alongside the interface it affects in
 [`api_documentation.md`](api_documentation.md). The ones worth knowing up front:
 
-- Mining proofs are verified on chain, but the seed derives from `blockhash`,
-  which a real network's block producer can influence at the margin, and
-  difficulty is set by the owner rather than retargeted automatically.
+- Mining proofs are verified on chain, against a seed the miner commits to
+  before the entropy exists and which folds several block hashes. A proposer
+  who produces *every* block in a session's seed span can still bias it, and
+  `block.timestamp` nudging biases difficulty retargeting within its 4× clamp.
 - Node telemetry and task-completion scores are attested by a trusted reporter.
   That keeps a node from grading its own work, at the cost of a trusted party.
-- Fraud reports are submitted by the registry owner; the automated analysis in
-  `ai_backend/fraud_detector.py` is not yet connected to it.
+- Fraud attestations are submitted by an authorized reporter set, and
+  `ai_backend/fraud_detector.py` feeds them through `node_client/fraud_reporter.py`.
+  Attestations carry no stake and no penalty for being wrong, so the registry
+  is only as trustworthy as the reporters the owner authorizes.

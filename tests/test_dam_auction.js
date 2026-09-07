@@ -326,8 +326,14 @@ describe("DAMAuction", function () {
   });
 
   describe("fraud blacklist enforcement", function () {
+    // The registry counts distinct reporters, not calls, so one signer cannot
+    // reach the default threshold of 3 on its own. These tests only care that
+    // a blacklisted node is refused, so they drop the threshold to a single
+    // attestation; the multi-reporter semantics are covered in
+    // test_fraud_detection.js.
     async function blacklist(fraud, address) {
-      for (let i = 0; i < 3; i++) await fraud.reportFraud(address);
+      await fraud.setBlacklistThreshold(1);
+      await fraud.reportFraud(address);
       expect(await fraud.isNodeBlacklisted(address)).to.equal(true);
     }
 

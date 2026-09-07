@@ -31,10 +31,11 @@ const ABI_EXPORTS = [
 // tensor miner's floating-point sum/norm outputs.
 const TENSOR_SCALE = 1_000_000n;
 
-// Proof-of-work target for commitBlock: higher is easier. The default gives
-// roughly a 1-in-4096 chance per nonce, so a local miner finds one in a few
-// thousand keccak hashes - fast enough for development, while still making
-// the proof cost something rather than being free.
+// Starting proof-of-work target for commitBlock: higher is easier. The
+// default gives roughly a 1-in-4096 chance per nonce, so a local miner finds
+// one in a few thousand keccak hashes - fast enough for development, while
+// still making the proof cost something rather than being free. From here the
+// contract retargets it automatically (see setRetargetParams below).
 const DEFAULT_HASH_DIFFICULTY = (2n ** 256n - 1n) / 4096n;
 
 async function resolveRewardTokenAddress(deployer) {
@@ -121,6 +122,17 @@ async function main() {
     ? BigInt(process.env.HASH_DIFFICULTY)
     : DEFAULT_HASH_DIFFICULTY;
 
+  // Automatic difficulty retargeting. Every `retargetInterval` committed
+  // blocks PoEConsensus rescales hashDifficulty toward `targetBlockTime`
+  // seconds per block, so difficulty no longer depends on the owner being
+  // awake. RETARGET_INTERVAL=0 pins difficulty and leaves only the manual
+  // setHashDifficulty override.
+  const retargetInterval =
+    process.env.RETARGET_INTERVAL !== undefined ? BigInt(process.env.RETARGET_INTERVAL) : 16n;
+  const targetBlockTime = process.env.TARGET_BLOCK_TIME
+    ? BigInt(process.env.TARGET_BLOCK_TIME)
+    : 60n;
+
   const PoEConsensus = await ethers.getContractFactory("PoEConsensus");
   const poeConsensus = await PoEConsensus.deploy(
     await poeEnergyMarket.getAddress(),
@@ -133,6 +145,13 @@ async function main() {
   );
   await poeConsensus.waitForDeployment();
   console.log(`PoEConsensus deployed to ${await poeConsensus.getAddress()}`);
+
+  await (await poeConsensus.setRetargetParams(retargetInterval, targetBlockTime)).wait();
+  console.log(
+    retargetInterval === 0n
+      ? "Difficulty retargeting disabled; hashDifficulty is pinned."
+      : `Difficulty retargets every ${retargetInterval} blocks toward ${targetBlockTime}s per block.`
+  );
 
   // Authorize PoEConsensus (not the deployer) to trigger reward payouts.
   await (await poeGreenNode.transferOwnership(await poeConsensus.getAddress())).wait();
@@ -147,6 +166,27 @@ async function main() {
   await (await damAuction.setFraudDetection(await fraudDetection.getAddress())).wait();
   await (await poeConsensus.setFraudDetection(await fraudDetection.getAddress())).wait();
   console.log("Wired FraudDetection into DAMAuction and PoEConsensus.");
+
+  // The registry counts distinct reporters, so the threshold has to be
+  // reachable given how many are actually authorized. This deployment
+  // authorizes one (the same trusted attester that reports PoE telemetry and
+  // task completion), so locally the threshold drops to a single attestation -
+  // otherwise nothing could ever be blacklisted and the enforcement paths
+  // would be dead code. A real network wants several independent reporters and
+  // a threshold to match.
+  if (reporterAddress !== deployer.address) {
+    await (await fraudDetection.setReporter(reporterAddress, true)).wait();
+  }
+  const fraudThreshold = process.env.FRAUD_BLACKLIST_THRESHOLD
+    ? BigInt(process.env.FRAUD_BLACKLIST_THRESHOLD)
+    : LOCAL_NETWORKS.has(network.name)
+      ? 1n
+      : 3n;
+  await (await fraudDetection.setBlacklistThreshold(fraudThreshold)).wait();
+  console.log(
+    `Authorized ${reporterAddress} as a fraud reporter; blacklist threshold ${fraudThreshold}` +
+      (fraudThreshold === 1n ? " (single-attester dev setting - not a production posture)." : ".")
+  );
 
   const chainId = (await ethers.provider.getNetwork()).chainId.toString();
   const deployment = {
