@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "./Ownable2Step.sol";
+
 /**
  * @title PoEEnergyMarket
  * @notice Tracks energy usage and latency to compute each node's efficiency score.
@@ -18,8 +20,7 @@ pragma solidity ^0.8.0;
  *  gated in `MLTaskManager`: a node cannot be trusted to grade its own
  *  efficiency, so a trusted third party attests to it instead.
  */
-contract PoEEnergyMarket {
-    address public owner;
+contract PoEEnergyMarket is Ownable2Step {
     address public reporter;
     uint256 public efficiencyThreshold;
 
@@ -31,18 +32,12 @@ contract PoEEnergyMarket {
     event NodeMetricsReported(address indexed node, uint256 energyUsage, uint256 latency, uint256 score);
     event NodeDeregistered(address indexed node);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not authorized");
-        _;
-    }
-
     modifier onlyReporter() {
         require(msg.sender == reporter, "Caller is not the authorized reporter");
         _;
     }
 
     constructor(address _reporter, uint256 _efficiencyThreshold) {
-        owner = msg.sender;
         reporter = _reporter;
         efficiencyThreshold = _efficiencyThreshold;
     }

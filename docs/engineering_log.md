@@ -31,7 +31,7 @@ no way to tell them apart without reading every file:
 | Area | State |
 | --- | --- |
 | Contracts | 6 production contracts, all with real test coverage |
-| Tests | **122 passing** Hardhat tests (from 0 real ones) |
+| Tests | **137 passing** Hardhat tests (from 0 real ones) |
 | Node client | 4 modules on web3.py, live-verified against a running chain |
 | Frontend | Working dashboard, no build step, driven end-to-end by an automated harness |
 | Deployment | One script deploys and wires the whole system, emitting config both the frontend and Python client read |
@@ -59,6 +59,9 @@ no way to tell them apart without reading every file:
   never have become its authorized caller, and a checked token transfer.
 - **`FraudDetection.sol`** — consulted by two contracts, then rebuilt around **one
   attestation per reporter** so automated detection could drive it safely (below).
+- **`Ownable2Step.sol`** — new shared base giving every administered contract a two-step
+  ownership transfer, so a deployment can hand control to a multisig instead of being
+  stuck with its deploying key forever.
 
 ### AI backend
 
@@ -128,6 +131,8 @@ not by reading them.
 | 26 | `mine_and_commit` recognised only chain id 31337 as a dev node, while `chain.py` recognised 31337 and 1337 | On Ganache the miner silently fell back to polling and timed out after 180s | Cloud review |
 | 27 | `FraudDetection` counted calls, not reporters, and had no way to undo a report | An automated detector would blacklist any node that stayed anomalous for 3 polling cycles, permanently and irreversibly | Designing the detector-to-chain wiring |
 | 28 | A single-reporter deployment could never reach the default blacklist threshold of 3 | With one authorized attester the whole enforcement path was dead code | Same — the fix to #27 made the threshold meaningful and exposed this |
+| 29 | Five contracts declared `owner` with no way to transfer it | On a real network the deploying key would be the permanent administrator — no multisig handover, no rotation after a leak — and contracts are immutable, so unfixable after deploy | Planning the public-network deploy path |
+| 30 | `FraudDetection`'s constructor auto-authorizes its deployer | With an explicit reporter set configured, the deploying key silently kept the power to blacklist nodes after ownership moved to the admin | Running the public deploy path and asserting every role individually |
 
 ---
 
@@ -258,7 +263,7 @@ again on the next block.
 The standard throughout: **run it, don't read it**. Every claim above was checked by
 executing something.
 
-- **Contracts** — 122 Hardhat tests, including tests that assert *computed values*, not
+- **Contracts** — 137 Hardhat tests, including tests that assert *computed values*, not
   just that a call succeeded: exact reward arithmetic, exact efficiency scores, the
   ranking algorithm picking specific nodes, and a measured gas figure.
 - **Gas** — a fully saturated 100-bid auction forms a helix in **2,517,223 gas, 4.2% of
@@ -293,8 +298,10 @@ Deliberate, and none of them are silent — each is documented where it matters.
   Staking and slashing would be the next real step.
 - **Auction creation is unbounded.** It degrades off-chain enumeration but is not a
   gas DoS — no on-chain function loops over all auctions.
-- **No testnet path.** Everything is local-Hardhat only: real oracle feeds, a real reward
-  token and network config are all unaddressed.
+- **Never deployed to a public chain.** The path exists and is exercised end to end
+  (preflight, external reward token, separated roles, ownership handover), but against a
+  local chain driven through the public-network code path — not against Sepolia itself,
+  which needs a funded key.
 - **`npm audit`** advisories have never been triaged.
 - **Marketing/landing page** was deferred in favour of the functional dashboard.
 
@@ -304,7 +311,7 @@ Deliberate, and none of them are silent — each is documented where it matters.
 
 ```bash
 npm install && pip install -r requirements.txt
-npx hardhat test                 # 122 tests
+npx hardhat test                 # 137 tests
 npx hardhat node                 # terminal 1
 npx hardhat run deployment/deploy_smart_contracts.js --network localhost
 python node_client/monitor.py --once      # report this node's PoE metrics

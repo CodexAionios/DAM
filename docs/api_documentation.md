@@ -17,11 +17,43 @@ both the browser dashboard and the Python client always agree on what is deploye
 
 | File | Contents |
 | --- | --- |
-| `frontend/contracts/addresses.json` | network, chain id, deployer, reporter, and every contract address |
+| `frontend/contracts/addresses.json` | The most recent deployment — network, chain id, deployer, roles, and every contract address |
+| `frontend/contracts/deployments/<network>.json` | The same record, kept per network so deploying elsewhere never destroys an earlier one |
 | `frontend/contracts/abi/*.json` | one ABI array per contract |
 
-`node_client/chain.py` loads both (`load_deployment()`, `load_abi()`), so a redeploy
-requires no code changes anywhere.
+`node_client/chain.py` loads these (`load_deployment()`, `load_abi()`), so a redeploy
+requires no code changes anywhere. `load_deployment("sepolia")`, or the `DAM_NETWORK`
+environment variable, selects a specific network instead of whichever ran last.
+
+---
+
+## Ownership and administration
+
+Every contract with privileged setters inherits `Ownable2Step`:
+
+| Function | Access | Notes |
+| --- | --- | --- |
+| `owner()` / `pendingOwner()` | view | Current administrator, and any outstanding nominee |
+| `transferOwnership(newOwner)` | owner | Nominates only — ownership does not move yet |
+| `acceptOwnership()` | the nominee | Completes the transfer |
+| `cancelOwnershipTransfer()` | owner | Withdraws a nomination |
+
+The two-step handshake exists because a single-step transfer to a mistyped or unreachable
+address ends administration permanently, and that is exactly the transaction people get
+wrong when moving control to a freshly created multisig. Here a wrong nomination is simply
+re-nominated. There is deliberately no `renounceOwnership`: every DAM contract needs a live
+owner (difficulty bounds, reporter rotation, fraud thresholds), so an owner-less contract
+is bricked rather than decentralized.
+
+`PoEGreenNode` is the exception — it keeps a single-step `transferOwnership`, because its
+owner is `PoEConsensus`, a contract that could never call `acceptOwnership`.
+
+**Roles are separate on purpose.** The administrator (`ADMIN_ADDRESS`), the telemetry and
+completion attester (`REPORTER_ADDRESS`), and the fraud reporters (`FRAUD_REPORTERS`) are
+independent addresses. They all default to the deployer for local convenience; on a public
+network the deploy script warns when they collapse into one key, and revokes the fraud
+reporter authorization `FraudDetection`'s constructor grants its deployer whenever an
+explicit reporter set was configured without it.
 
 ---
 

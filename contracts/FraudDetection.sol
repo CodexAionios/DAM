@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "./Ownable2Step.sol";
+
 /**
  * @title FraudDetection
  * @notice Registry of fraud attestations against nodes, read by `DAMAuction`
@@ -30,8 +32,7 @@ pragma solidity ^0.8.0;
  *  for being wrong, so this is only as trustworthy as the reporter set the
  *  owner authorizes.
  */
-contract FraudDetection {
-    address public owner;
+contract FraudDetection is Ownable2Step {
 
     // Distinct reporters required before a node counts as blacklisted. Set
     // this relative to how many reporters are actually authorized - with a
@@ -57,18 +58,12 @@ contract FraudDetection {
     event NodeCleared(address indexed node);
     event BlacklistThresholdUpdated(uint256 threshold);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only the owner can call this function.");
-        _;
-    }
-
     modifier onlyReporter() {
         require(isReporter[msg.sender], "Caller is not an authorized reporter");
         _;
     }
 
     constructor() {
-        owner = msg.sender;
         _setReporter(msg.sender, true);
     }
 

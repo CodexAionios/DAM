@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "./Ownable2Step.sol";
+
 /**
  * @title MLTaskManager
  * @notice Orchestrates ML tasks assigned to a helix of nodes formed by
@@ -14,7 +16,7 @@ pragma solidity ^0.8.0;
  *  than computed on-chain. A production deployment would replace
  *  `reportCompletion` with a verifiable proof submission.
  */
-contract MLTaskManager {
+contract MLTaskManager is Ownable2Step {
     enum HelixStatus {
         Unknown,
         Registered,
@@ -33,7 +35,6 @@ contract MLTaskManager {
         bool isGreen;
     }
 
-    address public owner;
     address public damAuction;
     address public reporter;
 
@@ -51,11 +52,6 @@ contract MLTaskManager {
     event MemberScoreReported(uint256 indexed helixId, address indexed member, uint256 score);
     event HelixFinalized(uint256 indexed helixId, uint256 combinedScore, bool isGreen);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not authorized");
-        _;
-    }
-
     modifier onlyDAMAuction() {
         require(msg.sender == damAuction, "Caller is not the DAMAuction contract");
         _;
@@ -67,7 +63,6 @@ contract MLTaskManager {
     }
 
     constructor(address _damAuction, address _reporter) {
-        owner = msg.sender;
         damAuction = _damAuction;
         reporter = _reporter;
     }

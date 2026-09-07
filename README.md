@@ -43,6 +43,44 @@ npx hardhat node
 npx hardhat run deployment/deploy_smart_contracts.js --network localhost
 ```
 
+Local deployments need no configuration: the Hardhat node supplies funded
+accounts, and a mock ERC20 is deployed as the reward token.
+
+### 3b. Deploy to a public network
+
+```bash
+cp .env.example .env       # then fill it in; .env is gitignored
+npx hardhat run deployment/deploy_smart_contracts.js --network sepolia
+```
+
+`sepolia`, `baseSepolia` and a generic `custom` network are preconfigured, each
+reading its RPC URL and `DEPLOYER_PRIVATE_KEY` from the environment.
+
+Public deployments differ from local ones in three deliberate ways:
+
+- **`REWARD_TOKEN_ADDRESS` is required.** There is no sensible way to invent a
+  real reward token, so the deploy refuses rather than guessing.
+- **A preflight runs before any transaction is sent** — it checks the signer,
+  native balance, that the reward token exists and answers `balanceOf`, that the
+  deployer can cover `REWARD_POOL_AMOUNT`, and that the fraud threshold is
+  reachable by the reporter set. Finding a missing variable halfway through
+  costs real gas and leaves a half-wired system.
+- **Ownership is handed to `ADMIN_ADDRESS`.** The transfer is two-step: the
+  deploy nominates, and that address must then call `acceptOwnership()` on
+  `PoEEnergyMarket`, `MLTaskManager`, `DAMAuction`, `PoEConsensus` and
+  `FraudDetection`. Until it does, the deployer stays in control — so a wrong
+  address is recoverable rather than permanent.
+
+**Separate the roles.** `ADMIN_ADDRESS` (use a multisig), `REPORTER_ADDRESS`
+(the trusted attester) and `FRAUD_REPORTERS` all default to the deployer, which
+is fine locally and wrong anywhere else: one leaked key would otherwise control
+telemetry, fraud accusations and consensus difficulty at once.
+
+Each deploy writes `frontend/contracts/deployments/<network>.json` alongside the
+`addresses.json` that the frontend and Python client read by default, so
+deploying elsewhere never destroys an earlier record. Set `DAM_NETWORK` to point
+the Python client at a specific one.
+
 ### 4. Report this node's PoE metrics and explore the network
 
 ```bash

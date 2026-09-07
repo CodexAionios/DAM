@@ -33,6 +33,7 @@ __all__ = [
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_CONTRACTS_DIR = PROJECT_ROOT / "frontend" / "contracts"
 ADDRESSES_PATH = FRONTEND_CONTRACTS_DIR / "addresses.json"
+DEPLOYMENTS_DIR = FRONTEND_CONTRACTS_DIR / "deployments"
 ABI_DIR = FRONTEND_CONTRACTS_DIR / "abi"
 
 DEFAULT_RPC_URL = os.environ.get("DAM_RPC_URL", "http://127.0.0.1:8545")
@@ -47,8 +48,31 @@ HARDHAT_DEV_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae7
 LOCAL_CHAIN_IDS = frozenset({31337, 1337})
 
 
-def load_deployment() -> Dict[str, Any]:
-    """Load the addresses.json written by deployment/deploy_smart_contracts.js."""
+def load_deployment(network: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load a deployment record written by deployment/deploy_smart_contracts.js.
+
+    The deploy script writes two things: a per-network record under
+    `frontend/contracts/deployments/<network>.json`, and `addresses.json` for
+    whichever deployment ran most recently. Passing `network` (or setting
+    DAM_NETWORK) selects a specific one, so deploying to a testnet does not
+    leave the local client pointed at it.
+    """
+
+    selected = network or os.environ.get("DAM_NETWORK")
+    if selected:
+        path = DEPLOYMENTS_DIR / f"{selected}.json"
+        if not path.exists():
+            available = (
+                ", ".join(sorted(p.stem for p in DEPLOYMENTS_DIR.glob("*.json")))
+                if DEPLOYMENTS_DIR.exists()
+                else "none"
+            )
+            raise FileNotFoundError(
+                f"No deployment recorded for network '{selected}' at {path}. "
+                f"Available: {available}."
+            )
+        return json.loads(path.read_text(encoding="utf-8"))
 
     if not ADDRESSES_PATH.exists():
         raise FileNotFoundError(

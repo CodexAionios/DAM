@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "./Ownable2Step.sol";
+
 /**
  * @title IMLTaskManager
  * @notice Interface exposed by MLTaskManager for helix task orchestration.
@@ -45,7 +47,7 @@ interface IFraudDetection {
  *  collaborate on the task as a helix. The resulting cluster is handed off to
  *  `MLTaskManager` for task orchestration and PoE-goal verification.
  */
-contract DAMAuction {
+contract DAMAuction is Ownable2Step {
     struct DataTask {
         uint256 taskId;
         uint256 dataHash;
@@ -95,7 +97,6 @@ contract DAMAuction {
     // the task could never be assigned. Paired with one-bid-per-address
     // below, filling the cap requires that many distinct funded accounts.
     uint256 public maxBidsPerAuction = 100;
-    address public owner;
     address public mlTaskManager;
     address public poeEnergyMarket;
     // Optional fraud registry; address(0) disables the blacklist checks
@@ -110,15 +111,9 @@ contract DAMAuction {
     event BidSubmitted(uint256 indexed auctionId, address indexed node, bool replacedPrevious);
 
     constructor(address _mlTaskManager) {
-        owner = msg.sender;
         mlTaskManager = _mlTaskManager;
         auctionCounter = 0;
         helixCounter = 0;
-    }
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only the owner can call this function.");
-        _;
     }
 
     /**

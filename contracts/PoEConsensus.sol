@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "./Ownable2Step.sol";
+
 /**
  * @title PoEConsensus
  * @notice Tensor-based block commitment for the DAM network, with the mining
@@ -81,7 +83,7 @@ interface IFraudDetection {
     function isNodeBlacklisted(address node) external view returns (bool);
 }
 
-contract PoEConsensus {
+contract PoEConsensus is Ownable2Step {
     // Largest tensor accepted, bounding calldata and verification gas.
     uint256 public constant MAX_TENSOR_ELEMENTS = 256;
     // Sanity bound per element so squaring can never overflow.
@@ -114,7 +116,6 @@ contract PoEConsensus {
     uint256 public constant MAX_TARGET_BLOCK_TIME = 365 days;
     uint256 public constant MAX_RETARGET_INTERVAL = 1_000_000;
 
-    address public owner;
     // Address of the PoE energy market that tracks node efficiency
     address public energyMarket;
     // Address of the green node contract responsible for rewards
@@ -193,11 +194,6 @@ contract PoEConsensus {
         uint256 expectedTimespan
     );
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not authorized");
-        _;
-    }
-
     /**
      * @param _energyMarket Address of the PoEEnergyMarket contract
      * @param _greenNode Address of the PoEGreenNode contract
@@ -220,7 +216,6 @@ contract PoEConsensus {
             _hashDifficulty >= MIN_HASH_DIFFICULTY && _hashDifficulty <= MAX_HASH_DIFFICULTY,
             "hashDifficulty out of range"
         );
-        owner = msg.sender;
         energyMarket = _energyMarket;
         greenNode = _greenNode;
         difficultyTarget = _difficultyTarget;

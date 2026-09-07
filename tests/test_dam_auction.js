@@ -201,7 +201,7 @@ describe("DAMAuction", function () {
       const { damAuction, bidders } = await loadFixture(deployDAMAuctionFixture);
       await damAuction.createAuction(1, 1000, 500, 50);
       await expect(damAuction.connect(bidders[0]).formHelix(1)).to.be.revertedWith(
-        "Only the owner can call this function."
+        "Not authorized"
       );
     });
 
@@ -406,7 +406,7 @@ describe("DAMAuction", function () {
       const { damAuction, bidders } = await loadFixture(deployDAMAuctionFixture);
       await expect(
         damAuction.connect(bidders[0]).setFraudDetection(bidders[0].address)
-      ).to.be.revertedWith("Only the owner can call this function.");
+      ).to.be.revertedWith("Not authorized");
     });
   });
 
@@ -445,17 +445,17 @@ describe("DAMAuction", function () {
       const { damAuction, bidders } = await loadFixture(deployDAMAuctionFixture);
       await expect(
         damAuction.connect(bidders[0]).setMaxBidsPerAuction(50)
-      ).to.be.revertedWith("Only the owner can call this function.");
+      ).to.be.revertedWith("Not authorized");
     });
 
     it("reverts setHelixSize / setMLTaskManager for non-owners", async function () {
       const { damAuction, bidders } = await loadFixture(deployDAMAuctionFixture);
       await expect(damAuction.connect(bidders[0]).setHelixSize(3)).to.be.revertedWith(
-        "Only the owner can call this function."
+        "Not authorized"
       );
       await expect(
         damAuction.connect(bidders[0]).setMLTaskManager(bidders[0].address)
-      ).to.be.revertedWith("Only the owner can call this function.");
+      ).to.be.revertedWith("Not authorized");
     });
   });
 });

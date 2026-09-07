@@ -198,16 +198,16 @@ describe("FraudDetection", function () {
 
       await expect(
         fraudDetection.connect(outsider).setReporter(outsider.address, true)
-      ).to.be.revertedWith("Only the owner can call this function.");
+      ).to.be.revertedWith("Not authorized");
       await expect(
         fraudDetection.connect(outsider).setBlacklistThreshold(1)
-      ).to.be.revertedWith("Only the owner can call this function.");
+      ).to.be.revertedWith("Not authorized");
       await expect(
         fraudDetection.connect(outsider).clearNode(outsider.address)
-      ).to.be.revertedWith("Only the owner can call this function.");
+      ).to.be.revertedWith("Not authorized");
       await expect(
         fraudDetection.connect(outsider).setReporter(ethers.ZeroAddress, true)
-      ).to.be.revertedWith("Only the owner can call this function.");
+      ).to.be.revertedWith("Not authorized");
     });
 
     it("refuses a zero threshold, which would blacklist every node", async function () {
