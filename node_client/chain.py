@@ -88,8 +88,8 @@ def get_contract(w3: Web3, deployment: Dict[str, Any], name: str) -> Contract:
 def get_contract_at(w3: Web3, address: str, abi_name: str) -> Contract:
     """
     Instantiate a contract at an explicit address using a named ABI - for
-    cases like the mock oracles, where the addresses.json key ("energyOracle")
-    differs from the ABI file it shares with other instances ("MockV3Aggregator").
+    cases where the addresses.json key differs from the ABI file name, such as
+    the reward token (key "rewardToken", ABI "MockERC20" on local networks).
     """
 
     return w3.eth.contract(address=Web3.to_checksum_address(address), abi=load_abi(abi_name))
