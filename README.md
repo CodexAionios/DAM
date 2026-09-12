@@ -11,7 +11,7 @@ DAM_Project/
 ├── ai_backend/              # AI models and computation logic
 ├── frontend/                # Web dashboard (plain HTML/CSS/JS, no build step)
 ├── deployment/              # Deployment and testing scripts
-├── docs/                    # Documentation (whitepaper, API references, roadmaps)
+├── docs/                    # Documentation (whitepaper, API reference, engineering log)
 ├── tests/                   # Unit and integration tests
 ├── package.json             # Node/Hardhat dependencies and scripts
 ├── hardhat.config.js        # Hardhat compiler and network configuration
@@ -122,12 +122,13 @@ seed to mature, runs the tensor miner and commits a valid result via `PoEConsens
 reconciles the resulting attestations on `FraudDetection` (dry run unless `--submit`).
 
 ### AI backend
-Backend services that perform task matching, fraud detection, efficiency modelling and
-reward distribution. The experimental tensor‑mining module has been merged into this
-folder as `tensor_miner.py` and serves as a foundation for future proof‑of‑work/efficiency
-engines. `helix_manager.py` groups nodes into fixed‑size "helix" clusters (by hash power,
-latency and PoE score) and allocates a task's workload across each cluster proportionally
-to hash power, per the helix model described in the project design notes.
+Three modules, each with a real consumer. `tensor_miner.py` is the proof-of-work engine
+`mine_and_commit.py` drives. `fraud_detector.py` scores node telemetry, and
+`fraud_reporter.py` carries its verdicts onto the chain. `helix_manager.py` is the
+off-chain twin of `DAMAuction.formHelix` — the same 40/30/30 ranking — plus the parts the
+chain does not do: proportional workload allocation across a helix, failed-node
+reassignment, and outcome evaluation. Efficiency scoring, reward payout and task matching
+live on chain (`PoEEnergyMarket`, `PoEGreenNode`, `DAMAuction`) rather than here.
 
 ### Frontend
 A plain HTML/CSS/JS dashboard (no build step, no framework) for interacting with the
@@ -141,9 +142,9 @@ containerized setups.
 ### Docs
 `api_documentation.md` documents the real contract and CLI interfaces, with each
 function's access control and the known caveats. `whitepaper.md` is a condensed design
-summary; `roadmap.md` sketches the phases. `engineering_log.md` records what was built and
-fixed, every bug found and how it was proven, and what remains open — start there if
-you're picking the project up.
+summary. `engineering_log.md` records what was built and fixed, every bug found and how
+it was proven, and what remains open — its "Still open" section is the roadmap, and the
+place to start if you're picking the project up.
 
 ### Tests
 Unit and integration tests for the contracts and backend components.

@@ -65,9 +65,13 @@ no way to tell them apart without reading every file:
 
 ### AI backend
 
-`task_matcher.py`, `efficiency_model.py`, `reward_distribution.py`, `tensor_miner.py` and
-`fraud_detector.py` were already written; the work here was correcting three of them (see
-the bug table) and finally connecting `fraud_detector.py` to the chain. `helix_manager.py`
+`tensor_miner.py` and `fraud_detector.py` were already written; the work here was
+correcting them (see the bug table) and finally connecting `fraud_detector.py` to the
+chain. Three further modules that shipped with the original repo — `task_matcher.py`,
+`efficiency_model.py`, `reward_distribution.py` — were reviewed and fixed too, then
+**removed in a later cleanup pass**: nothing imported them, nothing tested them, and each
+duplicated logic the chain performs authoritatively (`DAMAuction.formHelix`,
+`PoEEnergyMarket`, `PoEGreenNode`). Their bug-table rows stay as history. `helix_manager.py`
 was added as the off-chain twin of `DAMAuction.formHelix`.
 
 ### Node client

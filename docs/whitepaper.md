@@ -39,9 +39,11 @@ auctions, and can mine and commit blocks. Telemetry and task-completion scores
 reach the chain through a trusted reporter rather than being self-reported, so
 a node does not grade its own work.
 
-**AI backend.** Task matching, fraud heuristics, efficiency modelling, reward
-splitting, tensor mining, and the off-chain twin of the helix clustering that
-`DAMAuction` mirrors on chain.
+**AI backend.** Tensor mining, fraud heuristics (with the reporter that carries
+them on chain), and the off-chain twin of the helix clustering that `DAMAuction`
+mirrors — extended with workload allocation and failed-node reassignment, which
+the chain does not do. Efficiency scoring, reward payout and task matching are
+on-chain concerns and are not duplicated here.
 
 ## Status and limitations
 
