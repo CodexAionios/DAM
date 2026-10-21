@@ -67,6 +67,12 @@ h2 {
   padding-bottom: 0.25rem;
 }
 
+.hint {
+  font-size: 0.9em;
+  opacity: 0.8;
+  max-width: 60rem;
+}
+
 .inline-form {
   display: flex;
   flex-wrap: wrap;

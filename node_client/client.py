@@ -78,7 +78,10 @@ class DAMNodeClient:
         return tasks
 
     def my_efficiency_score(self) -> int:
-        """This node's latest on-chain PoE score (0 if it has never reported)."""
+        """
+        This node's efficiency as of its latest committed block: verified
+        hashes per attested joule, 1e18-scaled. 0 until it commits a block.
+        """
 
         return self.poe_energy_market.functions.efficiencyScores(self.account.address).call()
 
@@ -128,7 +131,7 @@ if __name__ == "__main__":
 
     client = DAMNodeClient(rpc_url=args.rpc_url)
     print(f"Node address: {client.account.address}")
-    print(f"On-chain PoE score: {client.my_efficiency_score()}")
+    print(f"On-chain efficiency: {client.my_efficiency_score() / 10**18:,.2f} hashes/J")
 
     print("Active auctions:")
     for auction in client.list_auctions():

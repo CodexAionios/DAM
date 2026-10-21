@@ -34,6 +34,17 @@ describe("PoEGreenNode", function () {
     expect((await token.balanceOf(validator.address)) - before).to.equal(expected);
   });
 
+  it("caps the bonus at one base reward, however large the score", async function () {
+    const { greenNode, owner, validator, token } = await loadFixture(deployGreenNodeFixture);
+    const before = await token.balanceOf(validator.address);
+
+    // Under the old metric an unbounded score was impossible; under work per
+    // joule it is not, so the payout bound lives here as well as upstream.
+    await greenNode.connect(owner).distributeBlockReward(validator.address, 10n ** 30n);
+
+    expect((await token.balanceOf(validator.address)) - before).to.equal(BASE_BLOCK_REWARD * 2n);
+  });
+
   it("pays only the base reward when the score is zero", async function () {
     const { greenNode, owner, validator, token } = await loadFixture(deployGreenNodeFixture);
     const before = await token.balanceOf(validator.address);

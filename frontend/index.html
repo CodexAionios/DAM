@@ -20,12 +20,16 @@
     <main>
       <section id="poe-section">
         <h2>Proof of Efficiency</h2>
-        <div id="poe-status">Connect a wallet to see your on-chain PoE score.</div>
-        <form id="report-metrics-form" class="inline-form">
-          <label>Node address <input name="node" id="report-node-input" type="text" placeholder="0x..." required /></label>
-          <label>Energy usage <input name="energy" type="number" min="1" value="100" required /></label>
-          <label>Latency <input name="latency" type="number" min="1" value="10" required /></label>
-          <button type="submit">Report node metrics (reporter only)</button>
+        <p class="hint">
+          Efficiency is verified work per joule: each committed block is credited with the hashes
+          its proof costs on average, divided by the energy attested for it. Blocks are mined with
+          <code>node_client/mine_and_commit.py</code>.
+        </p>
+        <div id="poe-status">Connect a wallet to see your on-chain efficiency.</div>
+        <form id="attest-energy-form" class="inline-form">
+          <label>Node address <input name="node" id="attest-node-input" type="text" placeholder="0x..." required /></label>
+          <label>Energy for next block (mJ) <input name="milliJoules" type="number" min="1" value="1500" required /></label>
+          <button type="submit">Attest energy (reporter only)</button>
         </form>
       </section>
 

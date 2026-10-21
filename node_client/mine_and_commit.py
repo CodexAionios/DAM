@@ -16,11 +16,21 @@ Mining is two-phase, and the reason is the seed. This script:
 4. Searches for a nonce such that keccak256(seed, nonce, tensor) falls under
    the contract's `hashDifficulty`. This is the part that actually costs work:
    hash outputs are unpredictable, so the nonce can only be found by searching.
-5. Commits, spending the session.
+5. Attests the energy steps 3-4 consumed, measured by `energy.py`, via
+   `PoEEnergyMarket.reportEnergy`.
+6. Commits, spending the session. The contract scores the block as
+   expectedHashes / joules, and this script recomputes that score locally and
+   checks it matches what the chain recorded.
 
 The contract recomputes the sum and norm from the submitted tensor, so neither
-can be fabricated. PoEConsensus also gates on this node's on-chain PoE score,
-so run monitor.py first.
+can be fabricated, and it derives the work from its own target, so that cannot
+be either. The energy is the one input taken on trust, which is why only the
+market's `reporter` may attest it. This script attests directly when it holds
+that key (the local-dev setup) and otherwise stops before spending any gas.
+
+Energy: RAPL counters when the machine exposes them. Without them the script
+refuses to run unless given `--assume-watts`, in which case every reading is
+labelled an estimate.
 
 Waiting for blocks: on a real network blocks arrive on their own. An idle local
 Hardhat node only mines when a transaction arrives, so nothing would ever
@@ -33,10 +43,13 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from web3 import Web3
+from web3.logs import DISCARD
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ai_backend"))
 from tensor_miner import initialize_block_tensor, tensor_mine_block  # noqa: E402
@@ -50,6 +63,11 @@ from chain import (
     load_deployment,
     send_transaction,
 )
+from energy import EnergyReading, resolve_meter
+
+# Mirrors PoEEnergyMarket.SCORE_SCALE: 1e18 fixed point x 1000 mJ per J.
+SCORE_SCALE = 10**21
+ONE_HASH_PER_JOULE = 10**18
 
 # Fixed-point scale matching the difficultyTarget/normTarget PoEConsensus was
 # deployed with (see deployment/deploy_smart_contracts.js: TENSOR_SCALE).
@@ -64,10 +82,34 @@ __all__ = [
     "scale_tensor",
     "compute_seed",
     "find_nonce",
+    "expected_score",
     "open_session",
     "wait_for_block",
+    "CommitResult",
     "mine_and_commit",
 ]
+
+
+@dataclass(frozen=True)
+class CommitResult:
+    """What one mining round produced, as measured here and as recorded on chain."""
+
+    receipt: dict
+    energy: EnergyReading
+    expected_hashes: int
+    hashes_searched: int
+    onchain_score: int
+    local_score: int
+
+    @property
+    def hashes_per_joule(self) -> float:
+        return self.onchain_score / ONE_HASH_PER_JOULE
+
+
+def expected_score(expected_hashes: int, milli_joules: int) -> int:
+    """Mirror PoEEnergyMarket.recordBlock: hashes per joule, 1e18-scaled."""
+
+    return (expected_hashes * SCORE_SCALE) // milli_joules
 
 
 def scale_tensor(tensor: np.ndarray) -> list[int]:
@@ -179,10 +221,26 @@ def mine_and_commit(
     difficulty_norm: float = 1.5,
     size: int = 5,
     dev_mine: bool = True,
-) -> dict:
-    """Open a session, mine against its seed, and commit the result on-chain."""
+    assume_watts: Optional[float] = None,
+) -> CommitResult:
+    """Open a session, mine against its seed, attest the energy, and commit."""
 
     poe_consensus = get_contract(w3, deployment, "PoEConsensus")
+    poe_energy_market = get_contract(w3, deployment, "PoEEnergyMarket")
+
+    # 0. Fail before spending gas: there must be a way to measure the energy,
+    #    and this key must be allowed to attest it.
+    meter = resolve_meter(assume_watts)
+    if meter.estimated:
+        print(f"WARNING: no energy counters on this machine; using {meter.source} as an ESTIMATE.")
+    reporter = poe_energy_market.functions.reporter().call()
+    if reporter.lower() != account.address.lower():
+        raise RuntimeError(
+            f"This key ({account.address}) is not PoEEnergyMarket's reporter ({reporter}). "
+            "Energy must be attested by the reporter, so in a deployment with separated roles "
+            "the measurement printed by a mining run has to be relayed to that attester. "
+            "Refusing to open a session whose block could never be scored."
+        )
 
     # 1. Claim a seed drawn from blocks that do not exist yet.
     session_id = open_session(w3, poe_consensus, account)
@@ -206,23 +264,28 @@ def mine_and_commit(
             f"local={local_seed.hex()} chain={bytes(seed).hex()}"
         )
 
-    # 3. Mine a tensor that satisfies the network's difficulty targets.
-    start_time = time.time()
-    result_tensor = tensor_mine_block(
-        node_id=account.address,
-        tensor=initialize_block_tensor(size),
-        target_sum=difficulty_sum,
-        target_norm=difficulty_norm,
-    )
-    if result_tensor is None:
-        raise RuntimeError("Mining failed to find a valid tensor within the iteration limit.")
-
-    scaled = scale_tensor(result_tensor)
-
-    # 4. Search for a nonce that clears the work target.
+    # The work this proof will be credited with, from the same target the
+    # nonce search uses. Read before mining, so a retarget triggered by this
+    # very commit cannot change what we expect.
     hash_difficulty = poe_consensus.functions.hashDifficulty().call()
-    nonce, digest, attempts = find_nonce(seed, scaled, hash_difficulty)
+    expected_hashes = poe_consensus.functions.expectedHashesPerProof().call()
+
+    # 3-4. Mine a tensor that satisfies the difficulty targets, then search for
+    #      a nonce that clears the work target - measuring the energy of both.
+    start_time = time.time()
+    with meter.measure() as measurement:
+        result_tensor = tensor_mine_block(
+            node_id=account.address,
+            tensor=initialize_block_tensor(size),
+            target_sum=difficulty_sum,
+            target_norm=difficulty_norm,
+        )
+        if result_tensor is None:
+            raise RuntimeError("Mining failed to find a valid tensor within the iteration limit.")
+        scaled = scale_tensor(result_tensor)
+        nonce, digest, attempts = find_nonce(seed, scaled, hash_difficulty)
     mining_time_seconds = time.time() - start_time
+    reading = measurement.reading
 
     print(
         f"Mined a valid tensor and proof in {mining_time_seconds:.3f}s "
@@ -230,9 +293,15 @@ def mine_and_commit(
         f"norm={float(np.linalg.norm(result_tensor, ord='fro')):.4f}, "
         f"nonce={nonce} after {attempts} hashes, digest={digest.hex()[:18]}...)"
     )
+    print(f"Energy for this proof: {reading.describe()}")
 
-    # 5. Commit, spending the session.
-    return send_transaction(
+    # 5. Attest the energy for this block.
+    send_transaction(
+        w3, account, poe_energy_market.functions.reportEnergy(account.address, reading.milli_joules)
+    )
+
+    # 6. Commit, spending the session.
+    receipt = send_transaction(
         w3,
         account,
         poe_consensus.functions.commitBlock(
@@ -242,6 +311,29 @@ def mine_and_commit(
             max(1, round(mining_time_seconds)),
             attempts,
         ),
+    )
+    if receipt["status"] != 1:
+        raise RuntimeError(f"commitBlock reverted (tx {receipt['transactionHash'].hex()}).")
+
+    # The receipt also carries the market's and the token's logs; skip those.
+    events = poe_consensus.events.BlockCommitted().process_receipt(receipt, errors=DISCARD)
+    if not events:
+        raise RuntimeError("commitBlock succeeded but emitted no BlockCommitted event; wrong ABI?")
+    onchain_score = int(events[0]["args"]["poeScore"])
+    local_score = expected_score(expected_hashes, reading.milli_joules)
+    if onchain_score != local_score:
+        raise RuntimeError(
+            f"On-chain efficiency {onchain_score} does not match the locally computed {local_score} "
+            f"for {expected_hashes} expected hashes over {reading.milli_joules} mJ."
+        )
+
+    return CommitResult(
+        receipt=receipt,
+        energy=reading,
+        expected_hashes=expected_hashes,
+        hashes_searched=attempts,
+        onchain_score=onchain_score,
+        local_score=local_score,
     )
 
 
@@ -256,13 +348,19 @@ def main() -> None:
         action="store_true",
         help="Never request blocks via evm_mine; wait for the chain to advance on its own.",
     )
+    parser.add_argument(
+        "--assume-watts",
+        type=float,
+        default=None,
+        help="Machine power draw to assume when RAPL counters are unavailable. Readings become estimates.",
+    )
     args = parser.parse_args()
 
     w3 = get_web3(args.rpc_url)
     deployment = load_deployment()
     account = load_account(w3=w3)
 
-    receipt = mine_and_commit(
+    result = mine_and_commit(
         w3,
         deployment,
         account,
@@ -270,8 +368,16 @@ def main() -> None:
         difficulty_norm=args.difficulty_norm,
         size=args.size,
         dev_mine=not args.no_dev_mine,
+        assume_watts=args.assume_watts,
     )
+    receipt = result.receipt
     print(f"Block committed in tx {receipt['transactionHash'].hex()} (status={receipt['status']})")
+    print(
+        f"Verified efficiency: {result.hashes_per_joule:,.2f} hashes/J "
+        f"({result.expected_hashes} expected hashes / {result.energy.joules:.3f} J"
+        f"{', ESTIMATED energy' if result.energy.estimated else ''}); "
+        f"on-chain score matches the local computation."
+    )
 
 
 if __name__ == "__main__":

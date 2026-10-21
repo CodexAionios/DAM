@@ -3,11 +3,53 @@
 // we use jsdom purely for the DOM/document, and load the real app.js through
 // Node's own ES module loader - wiring `document`/`window`/`fetch` as
 // globals first, exactly as a browser would provide them.
+import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { Wallet, JsonRpcProvider } from "ethers";
+import { Contract, JsonRpcProvider, Wallet, solidityPackedKeccak256 } from "ethers";
 
 const HARDHAT_ACCOUNT0_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const FRONTEND_ORIGIN = "http://127.0.0.1:8080";
+const CONTRACTS_DIR = new URL("../frontend/contracts/", import.meta.url);
+
+// 25 elements of 0.05 at TENSOR_SCALE 1e6: sum 1.25 < 2.0, norm^2 0.0625 < 2.25.
+const GOOD_TENSOR = Array.from({ length: 25 }, () => 50_000n);
+const ATTESTED_MILLIJOULES = 1500n;
+
+/**
+ * Mine and commit one block the way a node does - outside the dashboard,
+ * which has no mining UI by design. Mirrors node_client/mine_and_commit.py:
+ * open a session, let its seed mature, search for a nonce, commit.
+ */
+async function mineBlockOutOfBand(rpcProvider, wallet) {
+  const addresses = JSON.parse(readFileSync(new URL("addresses.json", CONTRACTS_DIR), "utf8"));
+  const abi = JSON.parse(readFileSync(new URL("abi/PoEConsensus.json", CONTRACTS_DIR), "utf8"));
+  const consensus = new Contract(addresses.contracts.PoEConsensus, abi, wallet);
+
+  const receipt = await (await consensus.openSession()).wait();
+  const sessionId = receipt.logs.map((log) => consensus.interface.parseLog(log)).find((e) => e?.name === "SessionOpened")
+    .args.sessionId;
+  const readyAt = Number(await consensus.sessionSeedReadyAt(sessionId));
+  while ((await rpcProvider.getBlockNumber()) < readyAt) {
+    await rpcProvider.send("evm_mine", []);
+  }
+
+  const seed = await consensus.sessionSeed(sessionId);
+  const difficulty = await consensus.hashDifficulty();
+  const expectedHashes = await consensus.expectedHashesPerProof();
+  let nonce = 0;
+  while (BigInt(solidityPackedKeccak256(["bytes32", "uint256", "uint256[]"], [seed, nonce, GOOD_TENSOR])) >= difficulty) {
+    nonce += 1;
+  }
+  await (await consensus.commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, BigInt(nonce + 1))).wait();
+  return { expectedHashes, hashesSearched: nonce + 1 };
+}
+
+/** Independent rendering of a 1e18-scaled efficiency, to compare with the UI's. */
+function expectedEfficiencyText(scaled) {
+  const whole = scaled / 10n ** 18n;
+  const cents = (scaled % 10n ** 18n) / 10n ** 16n;
+  return `${whole.toLocaleString("en-US")}.${cents.toString().padStart(2, "0")} hashes/J`;
+}
 
 class MockInjectedProvider {
   constructor(rpcProvider, wallet) {
@@ -54,7 +96,10 @@ function fail(message) {
 }
 
 async function main() {
-  const rpcProvider = new JsonRpcProvider("http://127.0.0.1:8545");
+  // cacheTimeout -1: ethers v6 otherwise reuses identical RPC results for
+  // 250ms, so a nonce looked up right after the out-of-band commit below came
+  // back stale and the next dashboard transaction failed with "nonce too low".
+  const rpcProvider = new JsonRpcProvider("http://127.0.0.1:8545", undefined, { cacheTimeout: -1 });
   const wallet = new Wallet(HARDHAT_ACCOUNT0_KEY, rpcProvider);
 
   const htmlResponse = await fetch(`${FRONTEND_ORIGIN}/index.html`);
@@ -122,16 +167,17 @@ async function main() {
     throw new Error(`account-display shows "${accountDisplay}", expected ${wallet.address}`);
   }
 
-  await runStep("Report node metrics (energy=10, latency=1)", () => {
-    const form = doc().getElementById("report-metrics-form");
+  const poeText = () => doc().getElementById("poe-status").textContent.replace(/\s+/g, " ");
+
+  await runStep(`Attest energy for the next block (${ATTESTED_MILLIJOULES} mJ)`, () => {
+    const form = doc().getElementById("attest-energy-form");
     // The connect-wallet step should have pre-filled this with the connected
     // address; assert that rather than overwriting it, so this also proves
     // the pre-fill behavior works.
     if (form.querySelector("[name=node]").value.toLowerCase() !== wallet.address.toLowerCase()) {
-      throw new Error("report-metrics-form's node field was not pre-filled with the connected address");
+      throw new Error("attest-energy-form's node field was not pre-filled with the connected address");
     }
-    form.querySelector("[name=energy]").value = "10";
-    form.querySelector("[name=latency]").value = "1";
+    form.querySelector("[name=milliJoules]").value = ATTESTED_MILLIJOULES.toString();
     form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
   });
 
@@ -139,7 +185,19 @@ async function main() {
   if (!poeStatusHtml.includes(wallet.address)) {
     throw new Error(`poe-status does not show the connected account: ${poeStatusHtml}`);
   }
-  console.log(`PoE status panel: ${doc().getElementById("poe-status").textContent.replace(/\s+/g, " ")}`);
+  // Energy alone is not a score: attested, pending, and no efficiency yet.
+  if (!poeText().includes(`${ATTESTED_MILLIJOULES} mJ`) || !poeText().includes("none yet")) {
+    throw new Error(`PoE panel should show ${ATTESTED_MILLIJOULES} mJ pending and no efficiency yet: ${poeText()}`);
+  }
+  console.log(`PoE panel after attesting: ${poeText()}`);
+
+  console.log("--- Mine and commit a block out of band, as a node would ---");
+  const { expectedHashes, hashesSearched } = await mineBlockOutOfBand(rpcProvider, wallet);
+  const expectedScore = (expectedHashes * 10n ** 21n) / ATTESTED_MILLIJOULES;
+  console.log(
+    `Committed: ${hashesSearched} hashes searched, credited ${expectedHashes} expected hashes; ` +
+      `chain should record ${expectedEfficiencyText(expectedScore)}.`
+  );
 
   await runStep("Create auction (efficiencyReq=1000)", () => {
     const form = doc().getElementById("create-auction-form");
@@ -153,6 +211,14 @@ async function main() {
   const auctionCard = doc().querySelector('[data-auction-id="1"]');
   if (!auctionCard) throw new Error("Auction #1 card did not render after creation");
   console.log("Auction #1 card rendered.");
+
+  // That step refreshed every panel, so the committed block is now visible:
+  // the exact efficiency, and the attestation consumed.
+  const wantEfficiency = expectedEfficiencyText(expectedScore);
+  if (!poeText().includes(wantEfficiency) || !poeText().includes("none pending")) {
+    throw new Error(`PoE panel should show ${wantEfficiency} and no pending energy: ${poeText()}`);
+  }
+  console.log(`PoE panel after the block: ${poeText()}`);
 
   await runStep("Submit bid on auction #1", () => {
     const form = doc().querySelector('.bid-form[data-auction-id="1"]');

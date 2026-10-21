@@ -199,6 +199,19 @@
   },
   {
     "inputs": [],
+    "name": "MAX_REFERENCE_EFFICIENCY",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "MAX_RETARGET_FACTOR",
     "outputs": [
       {
@@ -485,6 +498,19 @@
   },
   {
     "inputs": [],
+    "name": "expectedHashesPerProof",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "fraudDetection",
     "outputs": [
       {
@@ -686,6 +712,19 @@
   },
   {
     "inputs": [],
+    "name": "referenceEfficiency",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "referenceTime",
     "outputs": [
       {
@@ -868,6 +907,19 @@
       }
     ],
     "name": "setHashDifficulty",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_referenceEfficiency",
+        "type": "uint256"
+      }
+    ],
+    "name": "setReferenceEfficiency",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

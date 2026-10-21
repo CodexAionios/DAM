@@ -2,7 +2,10 @@ const { expect } = require("chai");
 const { ethers, network } = require("hardhat");
 const { loadFixture, mine, time } = require("@nomicfoundation/hardhat-network-helpers");
 
-const EFFICIENCY_THRESHOLD = 1_000n;
+// Efficiency is hashes per joule, 1e18-scaled; energy is attested in millijoules.
+const ONE_HASH_PER_JOULE = 10n ** 18n;
+const SCORE_SCALE = 10n ** 21n;
+const EFFICIENCY_THRESHOLD = ONE_HASH_PER_JOULE; // 1 hash per joule
 const DIFFICULTY_TARGET = 2_000_000n; // 2.0 at TENSOR_SCALE 1e6
 const NORM_TARGET = 1_500_000n; // 1.5 at TENSOR_SCALE 1e6
 const MAX_OE = 60n;
@@ -12,6 +15,14 @@ const REWARD_POOL = 100_000n * 10n ** 18n;
 
 // Easy target so tests find a nonce in a handful of hashes.
 const EASY_HASH_DIFFICULTY = (2n ** 256n - 1n) / 64n;
+// A proof against that target is credited as 64 expected hashes.
+const EASY_EXPECTED_HASHES = 64n;
+// Energy attested per proof unless a test says otherwise: 64 hashes for
+// 16 mJ is 4,000 hashes per joule.
+const DEFAULT_MILLIJOULES = 16n;
+const DEFAULT_REFERENCE_EFFICIENCY = 10_000n * ONE_HASH_PER_JOULE;
+
+const scoreFor = (expectedHashes, milliJoules) => (expectedHashes * SCORE_SCALE) / milliJoules;
 
 // A tensor that genuinely satisfies both targets: 25 elements of 0.05 →
 // sum 1.25 < 2.0, and squared norm 25*(0.05)^2 = 0.0625 < 2.25.
@@ -45,10 +56,19 @@ async function deployConsensusFixture() {
   );
   await consensus.waitForDeployment();
   await greenNode.transferOwnership(await consensus.getAddress());
-
-  await market.connect(reporter).reportNodeMetrics(miner.address, 1, 1);
+  await market.setConsensus(await consensus.getAddress());
 
   return { owner, reporter, miner, other, market, token, greenNode, consensus };
+}
+
+/**
+ * Attest the energy `node` spent on its next proof, as the trusted reporter
+ * does after a node mines (see node_client/mine_and_commit.py).
+ */
+async function attestEnergy(consensus, node, milliJoules = DEFAULT_MILLIJOULES) {
+  const market = await ethers.getContractAt("PoEEnergyMarket", await consensus.energyMarket());
+  const reporter = await ethers.getSigner(await market.reporter());
+  await market.connect(reporter).reportEnergy(node.address, milliJoules);
 }
 
 /** Open a mining session and return its id. */
@@ -76,17 +96,20 @@ async function matureSession(consensus, sessionId) {
 }
 
 /**
- * Open a session, wait for its seed, and search for a qualifying nonce.
+ * Open a session, wait for its seed, search for a qualifying nonce, and have
+ * the reporter attest the energy the search cost - the full sequence a node
+ * goes through before it can commit.
  *
  * `difficultyOverride` mines against a deliberately harder target than the
  * chain currently requires, so the proof survives a retarget that tightens
- * difficulty before it is committed.
+ * difficulty before it is committed. `attest: false` skips the attestation,
+ * for tests about what happens without one.
  */
 async function mineProof(
   consensus,
   signer,
   tensor,
-  { maxAttempts = 200_000, difficultyOverride } = {}
+  { maxAttempts = 200_000, difficultyOverride, attest = true, milliJoules = DEFAULT_MILLIJOULES } = {}
 ) {
   const sessionId = await openSession(consensus, signer);
   await matureSession(consensus, sessionId);
@@ -100,6 +123,9 @@ async function mineProof(
       [seed, nonce, tensor]
     );
     if (BigInt(digest) < difficulty) {
+      if (attest) {
+        await attestEnergy(consensus, signer, milliJoules);
+      }
       return { sessionId, seed, nonce, digest };
     }
   }
@@ -147,8 +173,9 @@ describe("PoEConsensus proof verification", function () {
     });
 
     it("rejects a proof mined for another node's seed", async function () {
-      const { consensus, market, reporter, miner, other } = await loadFixture(deployConsensusFixture);
-      await market.connect(reporter).reportNodeMetrics(other.address, 1, 1);
+      const { consensus, miner, other } = await loadFixture(deployConsensusFixture);
+      await attestEnergy(consensus, miner);
+      await attestEnergy(consensus, other);
 
       const minerSession = await openSession(consensus, miner);
       const otherSession = await openSession(consensus, other);
@@ -421,16 +448,158 @@ describe("PoEConsensus proof verification", function () {
     });
   });
 
-  describe("efficiency and fraud gates", function () {
-    it("rejects a proposer below the PoE threshold", async function () {
-      const { consensus, other } = await loadFixture(deployConsensusFixture);
-      const { sessionId, nonce } = await mineProof(consensus, other, GOOD_TENSOR);
+  describe("efficiency is scored from verified work per attested joule", function () {
+    it("credits the work implied by the target and divides by the attested energy", async function () {
+      const { consensus, market, miner } = await loadFixture(deployConsensusFixture);
+      expect(await consensus.expectedHashesPerProof()).to.equal(EASY_EXPECTED_HASHES);
 
-      await expect(
-        consensus.connect(other).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n)
-      ).to.be.revertedWith("PoE score below required threshold");
+      const { sessionId, nonce } = await mineProof(consensus, miner, GOOD_TENSOR);
+      await consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n);
+
+      const expected = scoreFor(EASY_EXPECTED_HASHES, DEFAULT_MILLIJOULES); // 4,000 hashes per joule
+      expect(expected).to.equal(4_000n * ONE_HASH_PER_JOULE);
+      expect((await consensus.getCommittedBlock(0)).poeScore).to.equal(expected);
+      expect(await market.efficiencyScores(miner.address)).to.equal(expected);
+      expect(await market.attestedEnergy(miner.address)).to.equal(0n);
     });
 
+    it("refuses a commit with no attested energy, without spending the session", async function () {
+      const { consensus, miner } = await loadFixture(deployConsensusFixture);
+      const { sessionId, nonce } = await mineProof(consensus, miner, GOOD_TENSOR, { attest: false });
+
+      await expect(
+        consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n)
+      ).to.be.revertedWith("No attested energy for this block");
+
+      // The revert left the session intact, so once energy is attested the
+      // same proof commits.
+      await attestEnergy(consensus, miner);
+      await consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n);
+      expect(await consensus.committedBlockCount()).to.equal(1n);
+    });
+
+    it("consumes the attestation, so one energy report cannot score two blocks", async function () {
+      const { consensus, miner } = await loadFixture(deployConsensusFixture);
+      const first = await mineProof(consensus, miner, GOOD_TENSOR);
+      await consensus.connect(miner).commitBlock(first.sessionId, GOOD_TENSOR, first.nonce, 1n, 100n);
+
+      const second = await mineProof(consensus, miner, GOOD_TENSOR, { attest: false });
+      await expect(
+        consensus.connect(miner).commitBlock(second.sessionId, GOOD_TENSOR, second.nonce, 1n, 100n)
+      ).to.be.revertedWith("No attested energy for this block");
+    });
+
+    it("rejects a block below the threshold and accepts one exactly at it", async function () {
+      const { consensus, miner } = await loadFixture(deployConsensusFixture);
+      // 64 hashes for 64.001 J falls just under 1 hash per joule.
+      const { sessionId, nonce } = await mineProof(consensus, miner, GOOD_TENSOR, { milliJoules: 64_001n });
+
+      await expect(
+        consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n)
+      ).to.be.revertedWith("Efficiency below threshold");
+
+      // 64 hashes for 64 J is exactly the threshold.
+      await attestEnergy(consensus, miner, 64_000n);
+      await consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n);
+      expect((await consensus.getCommittedBlock(0)).poeScore).to.equal(EFFICIENCY_THRESHOLD);
+    });
+
+    it("credits the target the proof was verified against, not the one it retargets to", async function () {
+      const { consensus, owner, miner } = await loadFixture(deployConsensusFixture);
+      await consensus.connect(owner).setRetargetParams(1n, 60n); // every block closes an epoch
+
+      const { sessionId, nonce } = await mineProof(consensus, miner, GOOD_TENSOR);
+      await consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n);
+
+      // The commit tightened difficulty 4x, but the block is scored on the
+      // 64-hash target it actually cleared.
+      expect(await consensus.expectedHashesPerProof()).to.equal(EASY_EXPECTED_HASHES * 4n);
+      expect((await consensus.getCommittedBlock(0)).poeScore).to.equal(
+        scoreFor(EASY_EXPECTED_HASHES, DEFAULT_MILLIJOULES)
+      );
+    });
+
+    it("does not let a low energy reading stand in for the work", async function () {
+      // The cheapest possible attestation, and no search at all: the work
+      // gate still refuses it before efficiency is ever computed.
+      const { consensus, miner } = await loadFixture(deployConsensusFixture);
+      const sessionId = await openSession(consensus, miner);
+      await matureSession(consensus, sessionId);
+      await attestEnergy(consensus, miner, 1n);
+
+      const seed = await consensus.sessionSeed(sessionId);
+      const difficulty = await consensus.hashDifficulty();
+      let lazyNonce = 0;
+      while (
+        BigInt(
+          ethers.solidityPackedKeccak256(["bytes32", "uint256", "uint256[]"], [seed, lazyNonce, GOOD_TENSOR])
+        ) < difficulty
+      ) {
+        lazyNonce += 1;
+      }
+
+      await expect(
+        consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, lazyNonce, 1n, 100n)
+      ).to.be.revertedWith("Proof does not meet work target");
+    });
+  });
+
+  describe("rewards scale with efficiency relative to the reference", function () {
+    /** Commit one block at `milliJoules` and return what the miner was paid. */
+    async function rewardFor(fixture, milliJoules) {
+      const { consensus, miner, token } = fixture;
+      const before = await token.balanceOf(miner.address);
+      const { sessionId, nonce } = await mineProof(consensus, miner, GOOD_TENSOR, { milliJoules });
+      await consensus.connect(miner).commitBlock(sessionId, GOOD_TENSOR, nonce, 1n, 100n);
+      return (await token.balanceOf(miner.address)) - before;
+    }
+
+    it("pays a bonus proportional to efficiency below the reference", async function () {
+      const fixture = await loadFixture(deployConsensusFixture);
+      expect(await fixture.consensus.referenceEfficiency()).to.equal(DEFAULT_REFERENCE_EFFICIENCY);
+
+      // 4,000 of a 10,000 hashes-per-joule reference -> 40% of a bonus.
+      const paid = await rewardFor(fixture, DEFAULT_MILLIJOULES);
+      expect(paid).to.equal(BASE_BLOCK_REWARD + (BASE_BLOCK_REWARD * 4n) / 10n);
+    });
+
+    it("pays the more efficient of two equal blocks more", async function () {
+      const fixture = await loadFixture(deployConsensusFixture);
+
+      const wasteful = await rewardFor(fixture, 32n); // 2,000 hashes per joule
+      const frugal = await rewardFor(fixture, 16n); // 4,000 hashes per joule
+
+      expect(wasteful).to.equal(BASE_BLOCK_REWARD + (BASE_BLOCK_REWARD * 2n) / 10n);
+      expect(frugal).to.equal(BASE_BLOCK_REWARD + (BASE_BLOCK_REWARD * 4n) / 10n);
+    });
+
+    it("caps the payout at twice the base reward, however small the energy reading", async function () {
+      // A miscalibrated (or dishonest) 1 mJ reading claims 64,000 hashes per
+      // joule. It earns the full bonus and not a token more.
+      const fixture = await loadFixture(deployConsensusFixture);
+
+      const paid = await rewardFor(fixture, 1n);
+      expect(paid).to.equal(BASE_BLOCK_REWARD * 2n);
+    });
+
+    it("lets the owner recalibrate the reference, within bounds", async function () {
+      const fixture = await loadFixture(deployConsensusFixture);
+      const { consensus, owner, other } = fixture;
+
+      await consensus.connect(owner).setReferenceEfficiency(4_000n * ONE_HASH_PER_JOULE);
+      expect(await rewardFor(fixture, DEFAULT_MILLIJOULES)).to.equal(BASE_BLOCK_REWARD * 2n);
+
+      await expect(consensus.connect(owner).setReferenceEfficiency(0n)).to.be.revertedWith(
+        "referenceEfficiency out of range"
+      );
+      await expect(
+        consensus.connect(owner).setReferenceEfficiency((await consensus.MAX_REFERENCE_EFFICIENCY()) + 1n)
+      ).to.be.revertedWith("referenceEfficiency out of range");
+      await expect(consensus.connect(other).setReferenceEfficiency(1n)).to.be.revertedWith("Not authorized");
+    });
+  });
+
+  describe("fraud and timing gates", function () {
     it("rejects a blacklisted proposer once a fraud registry is wired in", async function () {
       const { consensus, owner, miner } = await loadFixture(deployConsensusFixture);
 
@@ -583,10 +752,7 @@ describe("PoEConsensus proof verification", function () {
       // elapsed time - not "blocks came fast", but "no timing information at
       // all" - and must not be read as a maximum-speed epoch, or difficulty
       // compounds 4x per extra in-block commit on no evidence.
-      const { consensus, market, reporter, owner, miner, other } = await loadFixture(
-        deployConsensusFixture
-      );
-      await market.connect(reporter).reportNodeMetrics(other.address, 1, 1);
+      const { consensus, owner, miner, other } = await loadFixture(deployConsensusFixture);
       await consensus.connect(owner).setRetargetParams(1n, 60n);
 
       // Mine both proofs against a much harder target than the chain asks for,
