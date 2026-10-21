@@ -45,9 +45,13 @@ import "./Ownable2Step.sol";
  *  3. **Difficulty** - the contract recomputes the tensor's element sum and
  *     its squared Frobenius norm from the submitted tensor and checks both
  *     against the network targets. Neither is taken on trust.
- *  4. **Efficiency** - the proposer's PoE score must clear the market's
- *     threshold, the mining time must be within `maxOE` of the reference, and
- *     the proposer must not be blacklisted.
+ *  4. **Efficiency** - the block is scored as verified work per attested
+ *     joule, and that score must clear the market's threshold. The work is
+ *     `expectedHashes = type(uint256).max / hashDifficulty`, the number of
+ *     hashes a proof against this target costs on average; the energy is
+ *     what the trusted reporter attested for this block. The mining time must
+ *     also be within `maxOE` of the reference, and the proposer must not be
+ *     blacklisted.
  *
  *  Why gate 2 is necessary alongside gate 3: verifying the sum and norm proves
  *  the claimed metrics are true of the submitted data, but producing data with
@@ -71,8 +75,8 @@ import "./Ownable2Step.sol";
  *  bias that seed.
  */
 interface IPoEEnergyMarket {
-    function efficiencyScores(address node) external view returns (uint256);
     function efficiencyThreshold() external view returns (uint256);
+    function recordBlock(address node, uint256 expectedHashes) external returns (uint256 score);
 }
 
 interface IPoEGreenNode {
@@ -115,6 +119,16 @@ contract PoEConsensus is Ownable2Step {
     // production permanently rather than just misconfigure it.
     uint256 public constant MAX_TARGET_BLOCK_TIME = 365 days;
     uint256 public constant MAX_RETARGET_INTERVAL = 1_000_000;
+
+    // Bound on referenceEfficiency so `score * 1e18` in _rewardScore cannot
+    // overflow (that product is only formed when score < reference).
+    uint256 public constant MAX_REFERENCE_EFFICIENCY = type(uint256).max / 1e18;
+
+    // Efficiency (hashes per joule, 1e18-scaled) that earns the full reward
+    // bonus. Blocks below it earn a proportional share; blocks above it are
+    // capped, so a miscalibrated energy reading cannot multiply the payout.
+    // Default: 10,000 hashes per joule.
+    uint256 public referenceEfficiency = 10_000e18;
 
     // Address of the PoE energy market that tracks node efficiency
     address public energyMarket;
@@ -339,10 +353,7 @@ contract PoEConsensus is Ownable2Step {
         require(uint256(proofDigest) < hashDifficulty, "Proof does not meet work target");
         require(!committedProofs[proofDigest], "Proof already committed");
 
-        // 3. Proposer must be efficient enough, and not blacklisted.
-        uint256 nodeScore = IPoEEnergyMarket(energyMarket).efficiencyScores(msg.sender);
-        uint256 threshold = IPoEEnergyMarket(energyMarket).efficiencyThreshold();
-        require(nodeScore >= threshold, "PoE score below required threshold");
+        // 3. Proposer must not be blacklisted.
         if (fraudDetection != address(0)) {
             require(
                 !IFraudDetection(fraudDetection).isNodeBlacklisted(msg.sender),
@@ -363,8 +374,21 @@ contract PoEConsensus is Ownable2Step {
         }
         require(entropicOverhead <= maxOE, "Node entropy overhead too high");
 
-        // 6. Spend the session and record the block header.
+        // 6. Spend the session before calling out, so no external call ever
+        //    sees it live. A revert below restores it along with everything else.
         session.consumed = true;
+
+        // 7. Score the block: the work this proof represents, measured against
+        //    the target it was just verified against (before any retarget
+        //    below), divided by the energy attested for it. The market
+        //    consumes the attestation, so one energy report scores one block.
+        uint256 nodeScore = IPoEEnergyMarket(energyMarket).recordBlock(msg.sender, expectedHashesPerProof());
+        require(
+            nodeScore >= IPoEEnergyMarket(energyMarket).efficiencyThreshold(),
+            "Efficiency below threshold"
+        );
+
+        // 8. Record the block header.
         committedBlocks.push(
             BlockHeader({
                 proofDigest: proofDigest,
@@ -383,11 +407,36 @@ contract PoEConsensus is Ownable2Step {
 
         emit BlockCommitted(msg.sender, proofDigest, tensorSum, normSquared, nodeScore);
 
-        // 7. Retarget difficulty if this block closed an epoch.
+        // 9. Retarget difficulty if this block closed an epoch.
         _maybeRetarget();
 
-        // 8. Delegate reward distribution to the green node
-        IPoEGreenNode(greenNode).distributeBlockReward(msg.sender, nodeScore);
+        // 10. Delegate reward distribution to the green node, with the score
+        //    expressed relative to the reference efficiency.
+        IPoEGreenNode(greenNode).distributeBlockReward(msg.sender, _rewardScore(nodeScore));
+    }
+
+    /**
+     * @notice Hashes a proof against the current target costs on average.
+     * @dev Each nonce clears `hashDifficulty` with probability
+     *      hashDifficulty / 2^256, so the expected search length is the
+     *      inverse. This is the block's credited work: like Bitcoin's chainwork
+     *      it is an expectation, so a lucky miner and an unlucky one earn the
+     *      same work per block and only their energy differs.
+     */
+    function expectedHashesPerProof() public view returns (uint256) {
+        return type(uint256).max / hashDifficulty;
+    }
+
+    /**
+     * @dev Efficiency as a fraction of `referenceEfficiency`, 1e18-scaled and
+     *      capped at 1e18 - the scale PoEGreenNode expects, where 1e18 is one
+     *      full bonus.
+     */
+    function _rewardScore(uint256 score) internal view returns (uint256) {
+        if (score >= referenceEfficiency) {
+            return 1e18;
+        }
+        return (score * 1e18) / referenceEfficiency;
     }
 
     /**
@@ -539,6 +588,18 @@ contract PoEConsensus is Ownable2Step {
     function setDifficultyTargets(uint256 _difficultyTarget, uint256 _normTarget) external onlyOwner {
         difficultyTarget = _difficultyTarget;
         normTargetSquared = _normTarget * _normTarget;
+    }
+
+    /**
+     * @notice Set the efficiency that earns the full reward bonus.
+     * @param _referenceEfficiency Hashes per joule, 1e18-scaled
+     */
+    function setReferenceEfficiency(uint256 _referenceEfficiency) external onlyOwner {
+        require(
+            _referenceEfficiency > 0 && _referenceEfficiency <= MAX_REFERENCE_EFFICIENCY,
+            "referenceEfficiency out of range"
+        );
+        referenceEfficiency = _referenceEfficiency;
     }
 
     /**

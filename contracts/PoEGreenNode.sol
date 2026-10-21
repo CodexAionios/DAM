@@ -52,17 +52,19 @@ contract PoEGreenNode {
     /**
      * @notice Distribute block rewards to a validator.
      *
-     *  The total reward consists of a base portion plus a bonus scaled by the
-     *  validator's efficiency score. The efficiency score is expected to be
-     *  1e18‑scaled, matching the calculation in PoEEnergyMarket. The bonus
-     *  formula is linear; more sophisticated reward curves can be used in
-     *  future revisions.
+     *  The total reward is a base portion plus a bonus proportional to
+     *  `efficiencyScore`, where 1e18 means one full bonus. PoEConsensus passes
+     *  the block's efficiency relative to its reference efficiency on that
+     *  scale. Scores above 1e18 are capped here as well, so the payout per
+     *  block can never exceed twice the base reward, whatever the caller sends.
      *
      * @param validator Address of the validator to reward
-     * @param efficiencyScore The validator's PoE score (1e18‑scaled)
+     * @param efficiencyScore Bonus fraction, 1e18-scaled (1e18 = full bonus)
      */
     function distributeBlockReward(address validator, uint256 efficiencyScore) external onlyOwner {
-        // Compute bonus proportional to efficiency
+        if (efficiencyScore > 1e18) {
+            efficiencyScore = 1e18;
+        }
         uint256 bonus = (efficiencyScore * baseBlockReward) / 1e18;
         uint256 totalReward = baseBlockReward + bonus;
         require(IERC20(rewardToken).transfer(validator, totalReward), "Reward transfer failed");

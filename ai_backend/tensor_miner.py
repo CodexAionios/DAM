@@ -1,13 +1,16 @@
 """
 Experimental tensor mining engine for the DAM backend.
 
-This module provides a prototype proof-of-efficiency engine that evolves
-a tensor using gradient descent until it meets predefined difficulty targets.
-It can run concurrently across multiple nodes and tracks energy consumption.
+This module evolves a random tensor downward until its element sum and
+Frobenius norm fall under the difficulty targets.
 
-Future versions will integrate cryptographic commitments and useful-work
-objectives to convert the miner into a verifiable proof-of-work/efficiency
-mechanism.
+What it is not, stated plainly because the original design claimed otherwise:
+this is not proof of work and it does no useful work. Shrinking a tensor is
+trivially easy - an all-zeros tensor satisfies any target - so on its own it
+proves nothing. What makes a DAM block cost something is the keccak nonce
+search in node_client/mine_and_commit.py, verified on chain by PoEConsensus.
+It also does not measure energy: an earlier version reported its iteration
+count as "energy". Real measurement lives in node_client/energy.py.
 """
 
 import numpy as np
@@ -42,13 +45,6 @@ def evolve_tensor_with_constraints(
     return np.clip(evolved_tensor, 0, 1)
 
 
-def calculate_energy_consumption(iteration: int, base_energy: int = 1) -> int:
-    """
-    Calculate energy consumption based on the number of iterations.
-    """
-    return iteration * base_energy
-
-
 def tensor_mine_block(
     node_id: str,
     tensor: np.ndarray,
@@ -76,11 +72,10 @@ def tensor_mine_block(
         tensor = np.clip(tensor, 0, 1)
 
         if check_difficulty(tensor, target_sum, target_norm):
-            energy_used = calculate_energy_consumption(iteration)
             mining_time = time.time() - start_time
             print(
-                f"[{node_id}] Valid block found after {iteration} iterations "
-                f"with {energy_used} energy! Time: {mining_time:.2f} seconds"
+                f"[{node_id}] Tensor met the difficulty targets after {iteration} iterations "
+                f"({mining_time:.3f} s)"
             )
             return tensor
 

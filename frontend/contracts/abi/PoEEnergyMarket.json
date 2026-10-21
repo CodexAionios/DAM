@@ -23,9 +23,27 @@
         "internalType": "address",
         "name": "node",
         "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "expectedHashes",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "milliJoules",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "score",
+        "type": "uint256"
       }
     ],
-    "name": "NodeDeregistered",
+    "name": "EfficiencyRecorded",
     "type": "event"
   },
   {
@@ -40,23 +58,24 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "energyUsage",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "latency",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "score",
+        "name": "milliJoules",
         "type": "uint256"
       }
     ],
-    "name": "NodeMetricsReported",
+    "name": "EnergyAttested",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "node",
+        "type": "address"
+      }
+    ],
+    "name": "NodeDeregistered",
     "type": "event"
   },
   {
@@ -99,9 +118,54 @@
   },
   {
     "inputs": [],
+    "name": "MAX_EXPECTED_HASHES",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "SCORE_SCALE",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "acceptOwnership",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "attestedEnergy",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -109,6 +173,19 @@
     "name": "cancelOwnershipTransfer",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "consensus",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -210,16 +287,35 @@
       },
       {
         "internalType": "uint256",
-        "name": "energyUsage",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "latency",
+        "name": "expectedHashes",
         "type": "uint256"
       }
     ],
-    "name": "reportNodeMetrics",
+    "name": "recordBlock",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "score",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "node",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "milliJoules",
+        "type": "uint256"
+      }
+    ],
+    "name": "reportEnergy",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -248,6 +344,32 @@
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_consensus",
+        "type": "address"
+      }
+    ],
+    "name": "setConsensus",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_efficiencyThreshold",
+        "type": "uint256"
+      }
+    ],
+    "name": "setEfficiencyThreshold",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {

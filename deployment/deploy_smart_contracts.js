@@ -54,6 +54,16 @@ const TENSOR_SCALE = 1_000_000n;
 // contract retargets it automatically (see setRetargetParams below).
 const DEFAULT_HASH_DIFFICULTY = (2n ** 256n - 1n) / 4096n;
 
+// Efficiency is hashes per joule, 1e18-scaled (see PoEEnergyMarket).
+const ONE_HASH_PER_JOULE = 10n ** 18n;
+// Minimum efficiency a block must reach. One hash per joule is a sanity floor,
+// not a competitive bar: a single Python process does thousands.
+const DEFAULT_EFFICIENCY_THRESHOLD = ONE_HASH_PER_JOULE;
+// Efficiency that earns the full reward bonus. A single Python process
+// measures ~4,000 hashes/J at an assumed 15 W (node_client/monitor.py), so the
+// reference miner earns a visible partial bonus rather than the cap.
+const DEFAULT_REFERENCE_EFFICIENCY = 10_000n * ONE_HASH_PER_JOULE;
+
 const isLocal = () => LOCAL_NETWORKS.has(network.name);
 
 function envAddress(name, { required = false, fallback = null } = {}) {
@@ -127,6 +137,17 @@ async function preflight(config, deployer) {
     );
   }
 
+  const maxReference = (2n ** 256n - 1n) / 10n ** 18n; // PoEConsensus.MAX_REFERENCE_EFFICIENCY
+  if (config.referenceEfficiency === 0n || config.referenceEfficiency > maxReference) {
+    throw new Error(
+      `REFERENCE_EFFICIENCY must be between 1 and ${maxReference} (hashes/J, 1e18-scaled); ` +
+        `got ${config.referenceEfficiency}. PoEConsensus would reject it mid-deployment.`
+    );
+  }
+  console.log(
+    `  efficiency floor ${config.efficiencyThreshold} / full bonus at ${config.referenceEfficiency} (hashes/J x 1e18)`
+  );
+
   if (config.fraudThreshold > BigInt(config.fraudReporters.length)) {
     throw new Error(
       `FRAUD_BLACKLIST_THRESHOLD is ${config.fraudThreshold} but only ` +
@@ -183,7 +204,10 @@ function resolveConfig(deployer) {
   return {
     efficiencyThreshold: process.env.EFFICIENCY_THRESHOLD
       ? BigInt(process.env.EFFICIENCY_THRESHOLD)
-      : 100n,
+      : DEFAULT_EFFICIENCY_THRESHOLD,
+    referenceEfficiency: process.env.REFERENCE_EFFICIENCY
+      ? BigInt(process.env.REFERENCE_EFFICIENCY)
+      : DEFAULT_REFERENCE_EFFICIENCY,
     reporterAddress,
     adminAddress,
     fraudReporters,
@@ -282,6 +306,15 @@ async function main() {
     config.retargetInterval === 0n
       ? "Difficulty retargeting disabled; hashDifficulty is pinned."
       : `Difficulty retargets every ${config.retargetInterval} blocks toward ${config.targetBlockTime}s per block.`
+  );
+
+  // PoEConsensus is the only caller allowed to record verified work. Without
+  // this no block can be scored, and so no block can be committed.
+  await (await poeEnergyMarket.setConsensus(await poeConsensus.getAddress())).wait();
+  await (await poeConsensus.setReferenceEfficiency(config.referenceEfficiency)).wait();
+  console.log(
+    `Wired PoEEnergyMarket -> PoEConsensus. Efficiency floor ${config.efficiencyThreshold / ONE_HASH_PER_JOULE} ` +
+      `hashes/J, full bonus at ${config.referenceEfficiency / ONE_HASH_PER_JOULE} hashes/J.`
   );
 
   // Authorize PoEConsensus (not the deployer) to trigger reward payouts. This

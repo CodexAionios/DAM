@@ -47,6 +47,7 @@ cat <<'EOF'
   1. Start a local chain:     npx hardhat node
   2. Deploy the contracts:    npx hardhat run deployment/deploy_smart_contracts.js --network localhost
   3. Activate the Python env: source .venv/bin/activate   (or .venv\Scripts\activate on Windows)
-  4. Report this node's PoE:  python node_client/monitor.py --once
-  5. List auctions / bid:     python node_client/client.py
+  4. Check energy metering:   python node_client/monitor.py   (add --assume-watts W without RAPL)
+  5. Mine and commit a block: python node_client/mine_and_commit.py
+  6. List auctions / bid:     python node_client/client.py
 EOF

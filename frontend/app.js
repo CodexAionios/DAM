@@ -60,7 +60,7 @@ async function refreshHelixes() {
 
 async function refreshPoeStatus() {
   if (!state.address) {
-    poeStatusEl.textContent = "Connect a wallet to see your on-chain PoE score.";
+    poeStatusEl.textContent = "Connect a wallet to see your on-chain efficiency.";
     return;
   }
   const poeStatus = await fetchPoeStatus(state.readContracts, state.address);
@@ -80,24 +80,22 @@ function wireEvents() {
       state.writeContracts = buildContracts(Contract, state.config, signer);
       accountDisplay.textContent = address;
 
-      // Convenience default: reportNodeMetrics is reporter-gated, so this
-      // only actually succeeds when the connected wallet holds the reporter
-      // key (the local-dev setup), in which case reporting for yourself is
-      // the common case.
-      const nodeInput = document.getElementById("report-node-input");
+      // Convenience default: reportEnergy is reporter-gated, so this only
+      // actually succeeds when the connected wallet holds the reporter key
+      // (the local-dev setup), in which case attesting for yourself is the
+      // common case.
+      const nodeInput = document.getElementById("attest-node-input");
       if (nodeInput && !nodeInput.value) nodeInput.value = address;
     });
   });
 
-  document.getElementById("report-metrics-form").addEventListener("submit", (event) => {
+  document.getElementById("attest-energy-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const data = new FormData(event.target);
     const node = data.get("node");
-    withStatus(`Reporting metrics for ${node}`, async () => {
+    withStatus(`Attesting energy for ${node}`, async () => {
       const contracts = requireWallet();
-      await (
-        await contracts.poeEnergyMarket.reportNodeMetrics(node, data.get("energy"), data.get("latency"))
-      ).wait();
+      await (await contracts.poeEnergyMarket.reportEnergy(node, data.get("milliJoules"))).wait();
     });
   });
 

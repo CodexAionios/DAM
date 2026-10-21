@@ -4,6 +4,10 @@ A record of the work that took DAM_Project from a partially-stubbed prototype to
 tested, self-consistent reference implementation. Written for whoever picks this up
 next: what changed, what was broken, how each fix was proven, and what is still open.
 
+**The project closed in October 2026.** The last round of work (bugs 31–33, and the
+fourth structural change below) fixed the efficiency metric so the repository would not
+be left with a known defect at its centre. Why the project stopped is in the README.
+
 ---
 
 ## Where the project started
@@ -31,8 +35,8 @@ no way to tell them apart without reading every file:
 | Area | State |
 | --- | --- |
 | Contracts | 6 production contracts, all with real test coverage |
-| Tests | **137 passing** Hardhat tests (from 0 real ones) |
-| Node client | 4 modules on web3.py, live-verified against a running chain |
+| Tests | **161 passing** Hardhat tests (from 0 real ones), plus 13 Python known-answer tests for energy measurement |
+| Node client | 6 modules on web3.py, live-verified against a running chain |
 | Frontend | Working dashboard, no build step, driven end-to-end by an automated harness |
 | Deployment | One script deploys and wires the whole system, emitting config both the frontend and Python client read |
 | Docs | `api_documentation.md` describes the real interfaces with their access control and caveats |
@@ -51,7 +55,9 @@ no way to tell them apart without reading every file:
   `bidCount()` view, and fraud-blacklist enforcement.
 - **`PoEEnergyMarket.sol`** — redesigned around **per-node, reporter-attested telemetry**
   after a review found its score could be stolen (below). Gained `deregisterNode` so the
-  validator list can shrink.
+  validator list can shrink. Then rewritten a second time, at closure, because the score
+  it computed rewarded idle machines: efficiency is now **verified work per attested
+  joule**, with the work derived on chain (below).
 - **`PoEConsensus.sol`** — mining proofs are now **verified on chain** rather than taken
   on trust, against a seed the miner cannot choose (below). Difficulty **retargets itself**
   on a Bitcoin-style schedule; fraud enforcement added.
@@ -77,11 +83,14 @@ was added as the off-chain twin of `DAMAuction.formHelix`.
 ### Node client
 
 `chain.py` (shared web3.py access layer, reading the same deployment artifacts the
-frontend uses), `monitor.py` (psutil energy proxy + real RPC latency, reported on chain),
+frontend uses), `energy.py` (RAPL energy measurement, or an explicitly declared wattage
+labelled as an estimate — never a proxy), `monitor.py` (originally a psutil energy proxy
+reported on chain; now a local meter check and hashes-per-joule benchmark),
 `client.py` (auctions, bids, helix membership — rewritten off the imaginary REST API),
 `mine_and_commit.py` (opens a mining session, waits for its seed to mature, mines a tensor,
-searches for a proof nonce, commits it), and `fraud_reporter.py` (scores telemetry with the
-AI backend's detector and reconciles the resulting attestations on chain).
+searches for a proof nonce while measuring energy, attests it, commits, and checks the
+on-chain score), and `fraud_reporter.py` (scores telemetry with the AI backend's detector
+and reconciles the resulting attestations on chain).
 
 ### Frontend
 
@@ -137,12 +146,15 @@ not by reading them.
 | 28 | A single-reporter deployment could never reach the default blacklist threshold of 3 | With one authorized attester the whole enforcement path was dead code | Same — the fix to #27 made the threshold meaningful and exposed this |
 | 29 | Five contracts declared `owner` with no way to transfer it | On a real network the deploying key would be the permanent administrator — no multisig handover, no rotation after a leak — and contracts are immutable, so unfixable after deploy | Planning the public-network deploy path |
 | 30 | `FraudDetection`'s constructor auto-authorizes its deployer | With an explicit reporter set configured, the deploying key silently kept the power to blacklist nodes after ownership moved to the admin | Running the public deploy path and asserting every role individually |
+| 31 | The efficiency score was `1e18 / (energy × latency)` with CPU utilisation as the energy figure, and nothing in it measured work | An idle node scored highest: reproduced at 13.33 tokens per block for an idle node against 10.03 for one that was mining. Latency in the same denominator mixed network responsiveness into a number presented as energy efficiency | Product review: asking what the metric actually rewards, then reproducing it before changing anything |
+| 32 | `tensor_miner` printed its iteration count as "energy" | Every mining run showed a fabricated energy figure next to the real one | The first live run after real measurement existed |
+| 33 | The dashboard E2E harness inherited ethers v6's 250 ms RPC result cache | A nonce looked up right after an out-of-band transaction came back stale, so the next dashboard transaction failed with "nonce too low". Latent until a step sent two transactions within 250 ms | The harness, the first time it mined a block between UI steps |
 
 ---
 
-## The three structural changes
+## The four structural changes
 
-Three fixes were architecture changes rather than patches, and all are worth understanding.
+Four fixes were architecture changes rather than patches, and all are worth understanding.
 
 ### Per-node attested telemetry
 
@@ -156,6 +168,10 @@ one specific node's measurements via `reportNodeMetrics`, gated by `onlyReporter
 Chainlink dependency disappeared entirely. A node cannot be trusted to grade its own
 efficiency, so a third party attests — that is a real trust assumption, stated plainly
 rather than hidden behind an oracle that looked decentralized but wasn't.
+
+*Superseded at closure by "Efficiency as verified work per joule" below.* The trust model
+carried over — a reporter attests, per node — but what it attests changed: only the energy
+a block cost, with the work derived on chain instead of reported.
 
 ### On-chain proof verification
 
@@ -262,22 +278,93 @@ again on the next block.
 
 ---
 
+### Efficiency as verified work per joule
+
+Everything above hardened the *inputs* to the efficiency score — who may report them,
+whether proofs are real — without anyone asking what the score itself rewarded. The
+answer was the opposite of its name.
+
+`PoEEnergyMarket` computed `1e18 / (energyUsage × latency)`, and `monitor.py` reported
+`round(cpu_percent)` as `energyUsage`. A busy CPU therefore lowered a node's score. An
+idle one, reporting 1, earned close to the maximum. Before changing anything the bug was
+reproduced against the unmodified contracts: with the same latency, an idle node was paid
+**13.33** tokens per block and a node at full load **10.03**. Latency sat in the same
+denominator, so a node could also raise its "energy efficiency" by being closer to its
+RPC endpoint.
+
+The original 2024 design asked for "energy consumption per operation". The fix brings the
+code back to that:
+
+```
+efficiency = expectedHashes / joules
+expectedHashes = type(uint256).max / hashDifficulty     (derived on chain)
+joules         = attested by the reporter for this block
+```
+
+The asymmetry is the point. The numerator is not reported by anyone: a block only exists
+if its proof cleared the target, and the work that target implies is computed by
+`PoEConsensus` itself, from the target the proof was verified against (read before the
+commit's own retarget). Only the denominator is trusted, and it is the honest place for
+trust to sit — energy is a physical measurement at the machine, which no contract can
+observe. A dishonest reading can now only distort the denominator; it can no longer invent
+the score.
+
+Three details carry most of the correctness:
+
+- **One attestation scores one block.** `recordBlock` consumes it, so a single low reading
+  cannot score a run of blocks. Attestations overwrite rather than accumulate: an
+  accumulating counter would let energy from failed attempts pile up until a node could
+  never reach the threshold again.
+- **The payout is capped twice.** Work per joule is unbounded where the old score was not,
+  so `PoEConsensus` normalizes against `referenceEfficiency` and caps at one full bonus, and
+  `PoEGreenNode` caps again. A 1 mJ reading earns twice the base reward and not a token more.
+- **The client measures or refuses.** `energy.py` reads RAPL package counters, summing only
+  `package-*` domains (sub-domains and `psys` would double count), handling one counter
+  wrap, and rounding up. Without RAPL it runs only on an explicit `--assume-watts`, and
+  labels every reading an estimate. With neither it stops. Every one of these choices errs
+  against the node.
+
+Proven live: three blocks mined by the Python client on a running chain, each with its
+on-chain score equal to `expectedHashes × 1e21 / mJ` recomputed locally. For two of them
+the reward was also recomputed independently and matched the token balance delta to the
+wei — one that hit the cap (20 tokens) and one that did not (13.382… tokens). Both failure paths (no energy
+source; a key that is not the reporter) stopped before a single session was opened. The
+dashboard showed the exact efficiency the chain recorded, 2,730.66 hashes/J, and showed
+the attestation consumed. The 13 Python tests for the meter were themselves checked by
+breaking the code three ways (counting `psys`, dropping wrap handling, rounding down);
+each break failed the suite.
+
+One property of the new metric surfaced in those live runs rather than in review: work is
+credited at its *expectation*, so a lucky search looks efficient. Across the closure's
+runs, blocks at the same target (4,096 expected hashes) and the same assumed power scored
+anywhere from **1,022 to 32,000 hashes/J** — a 31× spread from search luck alone, between
+a search that needed 14,573 hashes and one that needed 378. That is inherent to crediting
+expected work, and is listed below.
+
+---
+
 ## How this was verified
 
 The standard throughout: **run it, don't read it**. Every claim above was checked by
 executing something.
 
-- **Contracts** — 137 Hardhat tests, including tests that assert *computed values*, not
+- **Contracts** — 161 Hardhat tests, including tests that assert *computed values*, not
   just that a call succeeded: exact reward arithmetic, exact efficiency scores, the
-  ranking algorithm picking specific nodes, and a measured gas figure.
-- **Gas** — a fully saturated 100-bid auction forms a helix in **2,517,223 gas, 4.2% of
+  ranking algorithm picking specific nodes, and a measured gas figure. Run three times
+  consecutively at closure with no failures.
+- **Energy measurement** — 13 known-answer tests against fabricated sysfs trees, checked
+  by deliberately breaking the code and watching them fail.
+- **Gas** — a fully saturated 100-bid auction forms a helix in **2,546,085 gas, 4.2% of
   the block limit** (measured in the shipped configuration, with the fraud registry
-  wired in), so the bid cap is provably affordable rather than merely present.
+  wired in), so the bid cap is provably affordable rather than merely present. Re-measured
+  at closure, deterministic across three runs; an earlier note here said 2,517,223, from
+  before later contract changes.
 - **Attacks** — the score-theft, replay and forgery attacks were each reproduced against
   a live deployed contract and confirmed to fail after the fix, not merely assumed fixed.
 - **Python** — exercised against a real chain: efficiency scores matched
-  `1e18 / (energy × latency)` exactly, and a reward payout was independently recomputed
-  and matched the token balance delta to the wei.
+  `expectedHashes × 1e21 / mJ` exactly (the client now asserts this itself after every
+  commit), and reward payouts were independently recomputed and matched the token balance
+  delta to the wei.
 - **Frontend** — `scripts/verify_frontend.mjs` drives the real application end to end,
   connect through finalize, and must finish with zero console errors.
 
@@ -289,14 +376,34 @@ surfaced immediately.
 
 ## Still open
 
-Deliberate, and none of them are silent — each is documented where it matters.
+Deliberate, and none of them are silent — each is documented where it matters. With the
+project closed, this is the list someone reviving it would start from.
 
+- **Energy cannot be verified remotely.** The score's numerator is trustless; its
+  denominator is a reading from the machine being scored, attested by a trusted party. In
+  a network of operators who own their hardware that is ordinary accounting. In an open
+  network it is the whole problem, and the reason the project closed: an operator who
+  under-reports joules earns more than one who reports honestly.
+- **No reporter service.** Only the reporter may attest energy, and nothing in this
+  repository relays a node's measurement to a separate reporter. `mine_and_commit.py`
+  attests directly when its key is the reporter (local development) and otherwise stops.
+- **No emission cap.** Rewards are bounded per block (at most twice the base), not per node
+  or per epoch. At a low difficulty a node mining in a loop drains the pool as fast as it
+  finds nonces.
+- **Per-block efficiency is noisy.** Work is credited at its expectation, so luck in the
+  nonce search shows up as efficiency — a 31× spread observed at identical settings. Since
+  the bonus is paid per block on that score, luck currently moves rewards more than
+  hardware does. A smoothed score (an average over a node's recent blocks) would separate
+  the two.
+- **RAPL was never exercised on real hardware here.** The development container exposed no
+  powercap interface, so the live runs used `--assume-watts`, and the RAPL reader is proven
+  against fabricated sysfs trees with known values — not against a physical counter.
 - **Consensus hardening, what is left of it.** A proposer that produces *every* block in a
   session's seed span can still bias that seed, and `block.timestamp` nudging biases
   retargeting within its 4× clamp. Both need a real randomness beacon to remove, not more
   contract logic.
-- **Trusted reporter.** PoE telemetry and completion scores depend on one honest party.
-  Removing that needs verifiable proofs, not more plumbing.
+- **Trusted reporter for task completion.** `MLTaskManager` completion scores depend on
+  one honest party. Removing that needs verifiable proofs, not more plumbing.
 - **Fraud attestations are unstaked.** The detector now feeds the registry, but a reporter
   pays nothing for being wrong, so the registry is only as good as the authorized set.
   Staking and slashing would be the next real step.
@@ -315,11 +422,12 @@ Deliberate, and none of them are silent — each is documented where it matters.
 
 ```bash
 npm install && pip install -r requirements.txt
-npx hardhat test                 # 137 tests
+npx hardhat test                 # 161 tests
+python -m unittest discover -s tests/python   # 13 energy-measurement tests
 npx hardhat node                 # terminal 1
 npx hardhat run deployment/deploy_smart_contracts.js --network localhost
-python node_client/monitor.py --once      # report this node's PoE metrics
-python node_client/mine_and_commit.py     # mine a block and commit the proof
+python node_client/monitor.py             # can this machine measure energy? (--assume-watts W without RAPL)
+python node_client/mine_and_commit.py     # mine, attest energy, commit, verify the score
 python node_client/fraud_reporter.py telemetry.json   # dry run; --submit to attest
 cd frontend && python -m http.server 8080 # dashboard at 127.0.0.1:8080
 node scripts/verify_frontend.mjs          # drive the dashboard end to end

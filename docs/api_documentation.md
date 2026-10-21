@@ -48,7 +48,7 @@ is bricked rather than decentralized.
 `PoEGreenNode` is the exception — it keeps a single-step `transferOwnership`, because its
 owner is `PoEConsensus`, a contract that could never call `acceptOwnership`.
 
-**Roles are separate on purpose.** The administrator (`ADMIN_ADDRESS`), the telemetry and
+**Roles are separate on purpose.** The administrator (`ADMIN_ADDRESS`), the energy and
 completion attester (`REPORTER_ADDRESS`), and the fraud reporters (`FRAUD_REPORTERS`) are
 independent addresses. They all default to the deployer for local convenience; on a public
 network the deploy script warns when they collapse into one key, and revokes the fraud
@@ -71,7 +71,9 @@ Auctions AI tasks and forms a "helix" of the top-scoring bidders.
 | `setHelixSize`, `setMaxBidsPerAuction`, `setMLTaskManager`, `setPoEEnergyMarket` | owner | `helixSize <= maxBidsPerAuction` is enforced in both directions |
 
 Bid validity: if a `PoEEnergyMarket` is configured, `submitBid` rejects any `efficiency`
-above the bidder's on-chain PoE score. `maxBidsPerAuction` (default 100) bounds the work
+above the bidder's on-chain efficiency score. That score now comes only from committed
+blocks, so a node must have mined at least one block before it can bid any positive
+efficiency — attesting energy alone does not count. `maxBidsPerAuction` (default 100) bounds the work
 `formHelix` does, so one auction cannot be flooded until helix formation runs out of gas.
 
 Events: `BidSubmitted(auctionId, node, replacedPrevious)`, `HelixFormed(helixId, auctionId, members, taskId)`.
@@ -101,20 +103,44 @@ Events: `HelixRegistered`, `MemberScoreReported`, `HelixFinalized`.
 
 ## PoEEnergyMarket
 
-The source of truth for node efficiency.
+The ledger of node efficiency: **verified work per attested joule**.
+
+```
+efficiency = expectedHashes / joules        stored 1e18-scaled (1e18 = 1 hash per joule)
+           = expectedHashes * 1e21 / milliJoules
+```
 
 | Function | Access | Notes |
 | --- | --- | --- |
-| `reportNodeMetrics(node, energyUsage, latency)` | reporter only | Sets `efficiencyScores[node] = 1e18 / (energyUsage * latency)`; zero if either input is zero |
-| `deregisterNode(node)` | owner | Removes the node from `nodeList` and clears its score |
-| `selectTopValidator()` | view | Highest scorer at or above `efficiencyThreshold`, else the zero address |
-| `setReporter(address)` | owner | |
-| `efficiencyScores(node)`, `efficiencyThreshold()`, `nodeList(i)` | view | |
+| `reportEnergy(node, milliJoules)` | reporter only | Attests the energy spent producing the node's **next** proof. Overwrites any unused attestation; rejects 0 |
+| `recordBlock(node, expectedHashes)` | `consensus` only | Scores a committed block and **consumes** the attestation; reverts `"No attested energy for this block"` without one |
+| `deregisterNode(node)` | owner | Removes the node from `nodeList` and clears its score and any pending attestation |
+| `selectTopValidator()` | view | Most efficient node at or above `efficiencyThreshold`, else the zero address |
+| `setReporter(address)`, `setConsensus(address)`, `setEfficiencyThreshold(value)` | owner | `setConsensus` must point at `PoEConsensus` or no block can be committed |
+| `efficiencyScores(node)` | view | Efficiency as of the node's latest committed block; 0 until it commits one |
+| `attestedEnergy(node)` | view | Millijoules pending for the node's next block; 0 when none |
+| `efficiencyThreshold()`, `nodeList(i)`, `SCORE_SCALE`, `MAX_EXPECTED_HASHES` | view | |
 
-Telemetry is attested by a trusted reporter rather than self-reported, for the same reason
-`reportCompletion` is: a node cannot be trusted to grade its own efficiency.
+Where each input comes from, and why that matters:
 
-Events: `NodeMetricsReported`, `NodeDeregistered`.
+- **`expectedHashes` is not reported by anyone.** `PoEConsensus` derives it from the
+  proof-of-work target the block was verified against, so the numerator is exactly as
+  trustworthy as the proof itself.
+- **Energy is attested by the trusted reporter**, because it is a physical measurement taken
+  at the machine and no contract can observe it. This is the one trusted input left, for the
+  same reason `reportCompletion` is gated: a node cannot be trusted to grade its own work.
+
+One attestation scores one block. Attestations overwrite rather than accumulate on purpose:
+an accumulating counter would let energy from failed attempts pile up until the node could
+never reach the threshold again.
+
+> **History:** this contract used to compute `1e18 / (energyUsage × latency)` from a
+> `reportNodeMetrics` call, with the node client reporting CPU utilisation as the energy
+> figure. Nothing in that formula measured work, so an idle machine scored highest — in a
+> reproduction it earned 13.33 tokens per block against 10.03 for a node that was mining.
+> See `engineering_log.md`, bug 31.
+
+Events: `EnergyAttested(node, milliJoules)`, `EfficiencyRecorded(node, expectedHashes, milliJoules, score)`, `NodeDeregistered(node)`.
 
 ---
 
@@ -135,7 +161,10 @@ Mining is **two-phase**: open a session, wait for its seed to mature, then commi
 | `committedBlockCount()` / `getCommittedBlock(index)` | view | Stored headers |
 | `committedProofs(digest)` | view | Whether that proof was already used |
 | `blocksUntilRetarget()` | view | Committed blocks left in the current epoch; 0 when retargeting is off |
+| `expectedHashesPerProof()` | view | `type(uint256).max / hashDifficulty` — the work a proof against the current target is credited with |
+| `referenceEfficiency()` | view | Efficiency (hashes/J, 1e18-scaled) that earns the full reward bonus; default 10,000 hashes/J |
 | `setRetargetParams(interval, targetBlockTime)` | owner | `interval = 0` pins difficulty |
+| `setReferenceEfficiency(value)` | owner | Must be in `(0, MAX_REFERENCE_EFFICIENCY]` |
 | `setHashDifficulty`, `setDifficultyTargets`, `setFraudDetection` | owner | Manual override and fraud wiring |
 
 ### Why mining is two-phase
@@ -173,12 +202,29 @@ A commit must clear four independent gates:
 3. **Difficulty.** The contract recomputes the element sum and the squared Frobenius norm
    from the submitted tensor and checks both against the targets. Neither is taken on
    trust. The squared norm is compared against `normTargetSquared`, avoiding a square root.
-4. **Efficiency.** The proposer's PoE score must clear the market threshold, mining time
-   must stay within `maxOE` of `referenceTime`, and the proposer must not be blacklisted.
+4. **Efficiency.** The block is scored by `PoEEnergyMarket.recordBlock(proposer,
+   expectedHashesPerProof())` — verified work over the energy attested for it — and the
+   score must reach the market's `efficiencyThreshold`. Mining time must also stay within
+   `maxOE` of `referenceTime`, and the proposer must not be blacklisted.
 
 Why both 2 and 3 are needed: verifying the sum and norm proves the metrics are true of the
 submitted data, but data with a small sum is trivial to write down — all zeros would pass.
-The work gate is what makes producing a qualifying result cost something.
+The work gate is what makes producing a qualifying result cost something. That also means
+the tensor part of "tensor mining" contributes no cost of its own; the keccak search does.
+
+### Scoring and reward
+
+The work credited to a block is `expectedHashesPerProof()` **at the target the proof was
+verified against**, read before the commit's own retarget can change it. Like Bitcoin's
+chainwork, it is an expectation: a lucky search and an unlucky one are credited the same
+work, and only their energy differs. That makes the per-block score noisy — in live runs, blocks
+at the same target and the same assumed power scored from 1,022 to 32,000 hashes/J,
+depending only on how many hashes the search happened to need. Over many blocks the
+average converges on the true rate; per block, luck moves the reward more than hardware.
+
+The reward is `baseBlockReward × (1 + f)`, where `f = min(score / referenceEfficiency, 1)`.
+The cap is enforced twice — here, and again in `PoEGreenNode` — so no energy reading, however
+small or miscalibrated, can push a block above twice the base reward.
 
 ### Difficulty retargeting
 
@@ -208,7 +254,7 @@ Pays block rewards, scaled by efficiency.
 
 | Function | Access | Notes |
 | --- | --- | --- |
-| `distributeBlockReward(validator, efficiencyScore)` | owner (i.e. `PoEConsensus`) | Pays `baseBlockReward + efficiencyScore * baseBlockReward / 1e18`; reverts if the token transfer fails |
+| `distributeBlockReward(validator, efficiencyScore)` | owner (i.e. `PoEConsensus`) | Pays `baseBlockReward + min(efficiencyScore, 1e18) * baseBlockReward / 1e18`, so at most twice the base; reverts if the token transfer fails |
 | `transferOwnership(newOwner)` | owner | How `PoEConsensus` becomes the authorized caller after deployment |
 
 ---
@@ -270,17 +316,33 @@ dev key and refuses to run against any chain id that is not known-local.
 
 | Command | Purpose |
 | --- | --- |
-| `python node_client/monitor.py --once` | Measure this node's energy proxy and latency, report them on-chain |
-| `python node_client/monitor.py` | Same, on a loop (`--interval-seconds`) |
-| `python node_client/client.py` | Show this node's PoE score, active auctions, and helix memberships |
-| `python node_client/mine_and_commit.py` | Open a mining session, mine against its seed, and commit via `PoEConsensus` |
+| `python node_client/monitor.py` | Local check, nothing sent on chain: which energy source is available, power at idle and under a keccak load, and the resulting hashes/J |
+| `python node_client/mine_and_commit.py` | Open a session, mine against its seed while measuring energy, attest it, commit, and verify the on-chain score |
+| `python node_client/client.py` | Show this node's efficiency, active auctions, and helix memberships |
 | `python node_client/fraud_reporter.py telemetry.json` | Score nodes with `ai_backend.fraud_detector` and reconcile this reporter's attestations |
 
+`monitor.py` and `mine_and_commit.py` accept `--assume-watts W` (see below).
 `DAMNodeClient` (in `client.py`) exposes `list_auctions()`, `my_efficiency_score()`,
 `submit_bid(...)` and `find_my_helixes()`.
 
-`monitor.py` requires the reporter key to actually submit metrics. In production that key
-belongs to a separate attestation service, not to the node being measured.
+### Energy measurement (`node_client/energy.py`)
+
+| Source | When | Reading |
+| --- | --- | --- |
+| RAPL (`/sys/class/powercap/intel-rapl:N`) | The machine exposes readable package counters | Measured: sum of `package-*` domains only — sub-domains and `psys` would double count |
+| `--assume-watts W` | No RAPL, and the flag was passed | `W × wall-clock seconds`, labelled **ESTIMATED** everywhere it is printed |
+| Neither | — | `EnergyUnavailable`: the script stops instead of guessing |
+
+Every rounding choice errs against the node: millijoules round up, a counter that did not
+advance is an error rather than zero, and whole-package readings include anything else
+running on the machine. Since Linux 5.10 `energy_uj` is root-only; the error says so.
+
+`mine_and_commit.py` checks both preconditions **before opening a session**: that energy can
+be measured, and that its key is `PoEEnergyMarket`'s reporter. Only the reporter may attest
+energy, so in a deployment with separated roles the script stops rather than mine a block
+that could never be scored, and the measurement has to be relayed to that attester — a
+service this repository does not include. After committing, it recomputes
+`expectedHashes × 1e21 / mJ` locally and fails loudly if the chain recorded anything else.
 
 `fraud_reporter.py` is the bridge from detection to enforcement. It is a **dry run unless
 given `--submit`**, since an attestation can get a node blacklisted; `--revoke-cleared`
